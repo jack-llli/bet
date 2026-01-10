@@ -1,8 +1,8 @@
 from selenium import webdriver
-from selenium.webdriver.common.by import By
-from selenium.webdriver.support. ui import WebDriverWait
+from selenium. webdriver.common.by import By
+from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
-from selenium. common.exceptions import TimeoutException, NoSuchElementException
+from selenium.common.exceptions import TimeoutException, NoSuchElementException
 from selenium.webdriver.common.action_chains import ActionChains
 import time
 import pickle
@@ -38,19 +38,312 @@ TEAM1_Y_OFFSET = (20, 60)
 TEAM2_Y_OFFSET = (60, 110)
 
 
+# ================== 详细打印水位数据函数 ==================
+def print_detailed_odds_data(data, print_to_console=True):
+    """
+    详细打印滚球水位数据，便于后续分析
+    
+    Args:
+        data: 从 get_all_odds_data() 返回的数据
+        print_to_console: 是否打印到控制台
+    
+    Returns:
+        str: 格式化的水位数据字符串
+    """
+    if not data: 
+        return "无数据"
+    
+    output_lines = []
+    separator = "=" * 80
+    sub_separator = "-" * 60
+    
+    output_lines.append(f"\n{separator}")
+    output_lines.append(f"【滚球水位详细数据报告】")
+    output_lines.append(f"时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    output_lines.append(separator)
+    
+    # 调试信息
+    debug = data.get('debug', {})
+    output_lines.append(f"\n📊 【调试统计信息】")
+    output_lines.append(f"  总扫描元素数: {debug.get('totalScanned', 0)}")
+    output_lines.append(f"  TAHOMA字体元素数: {debug.get('tahoma2Elements', 0)}")
+    output_lines.append(f"  从data属性获取:  {debug.get('fromDataAttr', 0)}")
+    output_lines.append(f"  从伪元素获取: {debug.get('fromPseudo', 0)}")
+    output_lines.append(f"  从文本获取: {debug.get('fromText', 0)}")
+    output_lines.append(f"  私有Unicode: {debug.get('privateUnicode', 0)}")
+    output_lines.append(f"  识别球队名数: {debug.get('teamNamesFound', 0)}")
+    output_lines.append(f"  识别水位数:  {debug.get('oddsFound', 0)}")
+    output_lines.append(f"  检测到比赛数: {debug.get('matchesDetected', 0)}")
+    
+    # 汇总信息
+    matches = data.get('matches', [])
+    total_odds = data.get('totalOdds', 0)
+    raw_elements = data.get('rawElements', 0)
+    
+    output_lines.append(f"\n📈 【汇总信息】")
+    output_lines.append(f"  比赛总数: {len(matches)}")
+    output_lines.append(f"  水位总数: {total_odds}")
+    output_lines.append(f"  原始元素数: {raw_elements}")
+    
+    # 布局配置
+    output_lines.append(f"\n📐 【布局配置】")
+    for bet_type, (x_start, x_end) in LAYOUT_CONFIG.items():
+        output_lines.append(f"  {bet_type}: X坐标范围 [{x_start}, {x_end})")
+    
+    # 各比赛详细数据
+    output_lines.append(f"\n{separator}")
+    output_lines.append(f"【各比赛详细水位数据】")
+    output_lines.append(separator)
+    
+    for idx, match in enumerate(matches, 1):
+        match_id = match.get('id', idx)
+        league = match.get('league', '未知联赛')
+        team1 = match.get('team1', '未知')
+        team2 = match.get('team2', '未知')
+        score1 = match.get('team1Score', '-')
+        score2 = match.get('team2Score', '-')
+        time_str = match.get('time', '')
+        
+        output_lines.append(f"\n{sub_separator}")
+        output_lines.append(f"【比赛 {match_id}】")
+        output_lines.append(f"  联赛: {league}")
+        output_lines.append(f"  主队: {team1} (比分: {score1})")
+        output_lines.append(f"  客队: {team2} (比分: {score2})")
+        output_lines. append(f"  时间:  {time_str}")
+        
+        # 主队水位汇总
+        team1_odds = match.get('team1Odds', [])
+        team2_odds = match.get('team2Odds', [])
+        all_odds = match.get('allOdds', [])
+        
+        output_lines.append(f"\n  📊 水位统计:")
+        output_lines. append(f"    主队水位数: {len(team1_odds)}")
+        output_lines. append(f"    客队水位数: {len(team2_odds)}")
+        output_lines.append(f"    总水位数: {len(all_odds)}")
+        
+        # 按盘口类型分类详细输出
+        odds_data = match.get('oddsData', {})
+        
+        output_lines.append(f"\n  📋 各盘口详细水位:")
+        
+        for bet_type in LAYOUT_CONFIG. keys():
+            if bet_type not in odds_data:
+                continue
+            
+            type_data = odds_data[bet_type]
+            has_data = False
+            
+            # 检查是否有数据
+            for key, values in type_data.items():
+                if values:
+                    has_data = True
+                    break
+            
+            if not has_data:
+                continue
+            
+            output_lines.append(f"\n    【{bet_type}】")
+            
+            for key, values in type_data.items():
+                if values:
+                    output_lines.append(f"      {key}:")
+                    for i, odds_obj in enumerate(values):
+                        value = odds_obj.get('value', 0)
+                        text = odds_obj.get('text', '')
+                        handicap = odds_obj.get('handicap', '')
+                        x = odds_obj.get('x', 0)
+                        y = odds_obj.get('y', 0)
+                        is_team1 = odds_obj.get('isTeam1', False)
+                        
+                        handicap_str = f", 盘口={handicap}" if handicap else ""
+                        team_str = "主队行" if is_team1 else "客队行"
+                        
+                        output_lines.append(f"        [{i+1}] 水位={text} (值={value:. 2f}{handicap_str}) | 坐标=({x}, {y}) | {team_str}")
+        
+        # 输出所有水位的原始列表(便于分析)
+        output_lines. append(f"\n  📝 所有水位原始数据:")
+        if all_odds:
+            for i, odds in enumerate(all_odds):
+                bet_type = odds.get('betType', '未知')
+                value = odds.get('value', 0)
+                text = odds. get('text', '')
+                handicap = odds.get('handicap', '')
+                x = odds. get('x', 0)
+                y = odds.get('y', 0)
+                is_team1 = odds.get('isTeam1', False)
+                
+                team_str = "主" if is_team1 else "客"
+                handicap_str = f"[{handicap}]" if handicap else ""
+                
+                output_lines.append(f"    {i+1:3d}. {bet_type:12s} | {team_str} | 水位={text: 6s} | 值={value: 5.2f} | 盘口{handicap_str: 8s} | XY=({x: 4d},{y:4d})")
+        else:
+            output_lines.append(f"    (无水位数据)")
+    
+    # 高水位汇总
+    output_lines.append(f"\n{separator}")
+    output_lines.append(f"【高水位汇总 (>=1.80)】")
+    output_lines.append(separator)
+    
+    high_odds_found = False
+    for match in matches:
+        team1 = match.get('team1', '未知')
+        team2 = match.get('team2', '未知')
+        all_odds = match.get('allOdds', [])
+        
+        high_odds = [o for o in all_odds if o.get('value', 0) >= 1.80]
+        
+        if high_odds: 
+            high_odds_found = True
+            output_lines.append(f"\n  🔥 {team1} vs {team2}:")
+            for odds in high_odds:
+                bet_type = odds.get('betType', '未知')
+                value = odds.get('value', 0)
+                text = odds.get('text', '')
+                handicap = odds.get('handicap', '')
+                is_team1 = odds.get('isTeam1', False)
+                
+                team_str = "主队" if is_team1 else "客队"
+                handicap_str = f"({handicap})" if handicap else ""
+                
+                output_lines.append(f"    ★ {bet_type} {team_str} {handicap_str}:  {text} (值={value:.2f})")
+    
+    if not high_odds_found:
+        output_lines.append("  (暂无高水位)")
+    
+    # 水位分布统计
+    output_lines.append(f"\n{separator}")
+    output_lines.append(f"【水位分布统计】")
+    output_lines.append(separator)
+    
+    all_values = []
+    for match in matches:
+        for odds in match.get('allOdds', []):
+            all_values.append(odds.get('value', 0))
+    
+    if all_values: 
+        ranges = [
+            (0, 1.20, "极低水位 (0-1.20)"),
+            (1.20, 1.50, "低水位 (1.20-1.50)"),
+            (1.50, 1.80, "中等水位 (1.50-1.80)"),
+            (1.80, 2.00, "较高水位 (1.80-2.00)"),
+            (2.00, 3.00, "高水位 (2.00-3.00)"),
+            (3.00, 100, "超高水位 (3.00+)")
+        ]
+        
+        for low, high, desc in ranges:
+            count = len([v for v in all_values if low <= v < high])
+            if count > 0:
+                pct = count / len(all_values) * 100
+                output_lines.append(f"  {desc}: {count}个 ({pct:.1f}%)")
+        
+        avg_value = sum(all_values) / len(all_values)
+        max_value = max(all_values)
+        min_value = min(all_values)
+        
+        output_lines.append(f"\n  统计:")
+        output_lines.append(f"    平均水位: {avg_value:.2f}")
+        output_lines. append(f"    最高水位: {max_value:. 2f}")
+        output_lines.append(f"    最低水位: {min_value:. 2f}")
+    else:
+        output_lines.append("  (无水位数据)")
+    
+    # 按盘口类型统计
+    output_lines.append(f"\n{separator}")
+    output_lines.append(f"【按盘口类型统计】")
+    output_lines.append(separator)
+    
+    bet_type_stats = {}
+    for match in matches:
+        for odds in match.get('allOdds', []):
+            bet_type = odds.get('betType', '其他')
+            if bet_type not in bet_type_stats: 
+                bet_type_stats[bet_type] = {'count':  0, 'values': []}
+            bet_type_stats[bet_type]['count'] += 1
+            bet_type_stats[bet_type]['values'].append(odds.get('value', 0))
+    
+    for bet_type, stats in sorted(bet_type_stats.items(), key=lambda x: -x[1]['count']):
+        count = stats['count']
+        values = stats['values']
+        avg = sum(values) / len(values) if values else 0
+        output_lines.append(f"  {bet_type}: {count}个水位, 平均={avg:.2f}")
+    
+    output_lines.append(f"\n{separator}")
+    output_lines.append(f"【报告结束】")
+    output_lines.append(separator)
+    
+    # 合并所有行
+    full_output = "\n".join(output_lines)
+    
+    # 打印到控制台
+    if print_to_console:
+        print(full_output)
+    
+    return full_output
+
+
+def save_odds_to_file(data, filename=None):
+    """
+    保存水位数据到文件
+    
+    Args:
+        data:  从 get_all_odds_data() 返回的数据
+        filename: 文件名，如果为None则自动生成
+    """
+    if filename is None:
+        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+        filename = f"odds_data_{timestamp}.txt"
+    
+    output = print_detailed_odds_data(data, print_to_console=False)
+    
+    with open(filename, 'w', encoding='utf-8') as f:
+        f.write(output)
+    
+    print(f"✓ 水位数据已保存到:  {filename}")
+    return filename
+
+
+def export_odds_to_json(data, filename=None):
+    """
+    导出水位数据到JSON文件，便于程序化分析
+    
+    Args: 
+        data: 从 get_all_odds_data() 返回的数据
+        filename:  文件名，如果为None则自动生成
+    """
+    if filename is None: 
+        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+        filename = f"odds_data_{timestamp}.json"
+    
+    # 添加导出时间戳
+    export_data = {
+        'export_time': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+        'data': data
+    }
+    
+    with open(filename, 'w', encoding='utf-8') as f:
+        json.dump(export_data, f, ensure_ascii=False, indent=2)
+    
+    print(f"✓ 水位数据已导出到JSON: {filename}")
+    return filename
+
+
 # ================== BettingBot 类 ==================
-class BettingBot: 
+class BettingBot:  
     def __init__(self):
         self.driver = None
         self.is_running = False
         self. is_logged_in = False
         self. wait = None
         self.auto_bet_enabled = False
-        self.bet_amount = 2
+        self. bet_amount = 2
         self.bet_history = []
-        self. threshold_settings = {}
+        self.threshold_settings = {}
         self.current_matches = []
         self.font_map = {}
+        # 新增：是否启用详细打印
+        self.enable_detailed_print = True
+        # 新增：是否保存到文件
+        self.save_to_file = False
 
     def setup_driver(self, headless=False):
         options = webdriver.ChromeOptions()
@@ -86,7 +379,7 @@ class BettingBot:
                     if (popup) {
                         var style = window.getComputedStyle(popup);
                         return popup.offsetWidth > 0 && popup.offsetHeight > 0 &&
-                               style.display !== 'none' && style.visibility !== 'hidden';
+                               style.display !== 'none' && style. visibility !== 'hidden';
                     }
                     return false;
                 """)
@@ -117,7 +410,7 @@ class BettingBot:
                     continue
 
                 time.sleep(1)
-            except: 
+            except:  
                 time.sleep(1)
 
         return False
@@ -186,9 +479,9 @@ class BettingBot:
                             samples.push({
                                 text: text. substring(0, 50),
                                 x: Math.round(rect.x),
-                                y: Math.round(rect.y),
+                                y: Math.round(rect. y),
                                 width: Math.round(rect.width),
-                                height: Math. round(rect.height),
+                                height: Math.round(rect.height),
                                 fontFamily: fontFamily
                             });
                         }
@@ -223,7 +516,7 @@ class BettingBot:
                 var classPatterns = ['match', 'event', 'game', 'odds', 'bet', 'league'];
                 classPatterns.forEach(function(pattern) {
                     var elems = document.querySelectorAll('[class*="' + pattern + '"]');
-                    elems. forEach(function(elem) {
+                    elems.forEach(function(elem) {
                         var rect = elem.getBoundingClientRect();
                         if (rect. height > 100 && rect.width > 400 && rect.y > 50 && rect.y < 1500) {
                             result. byClassName.push({
@@ -265,10 +558,10 @@ class BettingBot:
                         if (text.trim() && text.length < 50) {
                             elements.push({
                                 text: text. trim(),
-                                x: Math.round(rect.x),
+                                x: Math. round(rect.x),
                                 y: Math.round(rect.y),
                                 width: Math.round(rect.width),
-                                height: Math. round(rect.height),
+                                height: Math.round(rect.height),
                                 tag: elem.tagName
                             });
                         }
@@ -291,7 +584,7 @@ class BettingBot:
 
         current_y = -1
         row_num = 0
-        for elem in raw_data[: 80]: 
+        for elem in raw_data[: 80]:  
             if abs(elem['y'] - current_y) > 12:
                 row_num += 1
                 current_y = elem['y']
@@ -300,7 +593,6 @@ class BettingBot:
             log_callback(f"    X={elem['x']: 4d} [{elem['text'][:25]}]")
 
         return raw_data
-
     def login(self, username, password, log_callback):
         try:
             log_callback("正在访问登录页面...")
@@ -355,7 +647,7 @@ class BettingBot:
             cookies = self.driver.get_cookies()
             with open(COOKIES_FILE, "wb") as f:
                 pickle.dump(cookies, f)
-            log_callback(f"✓ Cookies 已保存")
+            log_callback(f"✓ Cookies 已保���")
 
             log_callback("\n进入滚球页面...")
             time.sleep(3)
@@ -395,7 +687,7 @@ class BettingBot:
         try:
             self.driver.execute_script("window.scrollTo(0, 600);")
             time.sleep(0.5)
-            self.driver.execute_script("window. scrollTo(0, 1200);")
+            self.driver.execute_script("window.scrollTo(0, 1200);")
             time.sleep(0.5)
             self.driver.execute_script("window. scrollTo(0, 400);")
             time.sleep(0.8)
@@ -424,7 +716,7 @@ class BettingBot:
                         var attrs = ['data-value', 'data-odds', 'data-num', 'data-price',
                                     'data-text', 'data-content', 'data-v', 'data-o', 'data-bet'];
 
-                        for (var i = 0; i < attrs. length; i++) {{
+                        for (var i = 0; i < attrs.length; i++) {{
                             var val = elem.getAttribute(attrs[i]);
                             if (val && /[\\d\\.]/.test(val)) {{
                                 debugInfo.fromDataAttr++;
@@ -537,7 +829,7 @@ class BettingBot:
                         for (var i = 0; i < methods.length; i++) {{
                             try {{
                                 var result = methods[i]();
-                                if (result && result. trim()) {{
+                                if (result && result.trim()) {{
                                     return result.trim();
                                 }}
                             }} catch(e) {{}}
@@ -575,13 +867,13 @@ class BettingBot:
 
                             var text = getElementText(elem);
 
-                            if (text && text. length > 0 && text.length < 80) {{
+                            if (text && text.length > 0 && text.length < 80) {{
                                 allTextData.push({{
                                     text: text,
-                                    x: Math.round(rect.x),
+                                    x: Math. round(rect.x),
                                     y: Math.round(rect.y),
-                                    width: Math.round(rect.width),
-                                    height: Math.round(rect.height),
+                                    width: Math.round(rect. width),
+                                    height:  Math.round(rect.height),
                                     tagName: elem.tagName,
                                     className: elem.className || ''
                                 }});
@@ -593,7 +885,7 @@ class BettingBot:
                     var uniqueData = [];
                     allTextData.forEach(function(item) {{
                         var key = item.text + '_' + item.x + '_' + item.y;
-                        if (! seen.has(key)) {{
+                        if (!seen.has(key)) {{
                             seen.add(key);
                             uniqueData.push(item);
                         }}
@@ -717,7 +1009,7 @@ class BettingBot:
 
                         allOddsInMatch.sort(function(a, b) {{
                             if (Math.abs(a.y - b.y) < 10) {{
-                                return a. x - b.x;
+                                return a.x - b.x;
                             }}
                             return a.y - b.y;
                         }});
@@ -763,9 +1055,9 @@ class BettingBot:
                                     }}
                                 }} else if (betType === '单/双') {{
                                     if (isTeam1Row) {{
-                                        match. oddsData[betType].odd.push(oddsObj);
+                                        match.oddsData[betType].odd.push(oddsObj);
                                     }} else {{
-                                        match.oddsData[betType].even.push(oddsObj);
+                                        match.oddsData[betType]. even.push(oddsObj);
                                     }}
                                 }} else if (betType === '下个进球') {{
                                     if (isTeam1Row) {{
@@ -820,8 +1112,16 @@ class BettingBot:
                 return getAllOddsData();
             """)
 
-            if data: 
-                self.current_matches = data.get('matches', [])
+            if data:  
+                self.current_matches = data. get('matches', [])
+                
+                # 新增：详细打印水位数据
+                if self.enable_detailed_print:
+                    print_detailed_odds_data(data, print_to_console=True)
+                
+                # 新增：保存到文件
+                if self.save_to_file:
+                    save_odds_to_file(data)
 
             return data
 
@@ -858,7 +1158,7 @@ class BettingBot:
 
             return result
 
-        except Exception as e: 
+        except Exception as e:  
             return {'success': False}
 
     def place_bet(self, amount, log_callback):
@@ -875,7 +1175,7 @@ class BettingBot:
                         input.value = '';
                         input.focus();
                         input.value = amount;
-                        input. dispatchEvent(new Event('input', {{bubbles: true}}));
+                        input.dispatchEvent(new Event('input', {{bubbles: true}}));
                         input.dispatchEvent(new Event('change', {{bubbles: true}}));
                         return {{success: true}};
                     }}
@@ -911,7 +1211,7 @@ class BettingBot:
 
             return False
 
-        except Exception as e:
+        except Exception as e: 
             log_callback(f"  ✗ 下注出错: {e}")
             return False
 
@@ -922,7 +1222,7 @@ class BettingBot:
         global_threshold = self.threshold_settings.get('global', 0)
         
         for match in self.current_matches:
-            match_id = match. get('id')
+            match_id = match.get('id')
             team1 = match.get('team1', '')
             team2 = match.get('team2', '')
 
@@ -962,12 +1262,13 @@ class BettingBot:
         log_callback(f"🚀 开始实时监控水位")
         log_callback(f"   刷新间隔: {interval} 秒")
         log_callback(f"   自动下注: {'开启' if self.auto_bet_enabled else '关闭'}")
+        log_callback(f"   详细打印: {'开启' if self.enable_detailed_print else '关闭'}")
         if self.threshold_settings:
             log_callback(f"   水位阈值: {self. threshold_settings}")
         log_callback(f"{'='*50}\n")
 
         while self.is_running:
-            try: 
+            try:  
                 data = self.get_all_odds_data()
 
                 if data:
@@ -977,13 +1278,13 @@ class BettingBot:
                     total_odds = data.get('totalOdds', 0)
                     log_callback(f"[更新] {len(matches)} 场比赛, {total_odds} 个水位")
 
-                    if self.auto_bet_enabled:
+                    if self. auto_bet_enabled: 
                         self.check_and_auto_bet(log_callback)
 
                 time.sleep(interval)
 
             except Exception as e:
-                log_callback(f"✗ 监控错误:  {str(e)}")
+                log_callback(f"✗ 监控错误: {str(e)}")
                 time. sleep(interval)
 
         log_callback("\n监控已停止")
@@ -995,7 +1296,6 @@ class BettingBot:
                 self.driver.quit()
             except:
                 pass
-
 
 # ================== GUI 类 ==================
 class BettingBotGUI:
@@ -1098,15 +1398,37 @@ class BettingBotGUI:
         tk.Label(self.bet_frame, text="触发", bg='#16213e', fg='#888888',
                 font=('Microsoft YaHei UI', 9)).grid(row=2, column=2, padx=3)
 
+        # 新增：详细打印选项
+        self.detailed_print_var = tk.BooleanVar(value=True)
+        self.detailed_print_check = tk.Checkbutton(self. bet_frame, text="控制台详细打印",
+                                                   variable=self.detailed_print_var,
+                                                   bg='#16213e', fg='#00ff88',
+                                                   selectcolor='#0f3460',
+                                                   activebackground='#16213e',
+                                                   font=('Microsoft YaHei UI', 9),
+                                                   command=self.toggle_detailed_print)
+        self.detailed_print_check.grid(row=3, column=0, columnspan=3, pady=(5, 0), sticky='w')
+
+        # 新增：保存到文件选项
+        self.save_file_var = tk.BooleanVar(value=False)
+        self.save_file_check = tk.Checkbutton(self.bet_frame, text="保存数据到文件",
+                                              variable=self.save_file_var,
+                                              bg='#16213e', fg='#00ff88',
+                                              selectcolor='#0f3460',
+                                              activebackground='#16213e',
+                                              font=('Microsoft YaHei UI', 9),
+                                              command=self.toggle_save_file)
+        self.save_file_check.grid(row=4, column=0, columnspan=3, pady=(2, 0), sticky='w')
+
         self.auto_bet_var = tk.BooleanVar(value=False)
-        self.auto_bet_check = tk.Checkbutton(self. bet_frame, text="启用自动下注",
+        self.auto_bet_check = tk.Checkbutton(self.bet_frame, text="启用自动下注",
                                             variable=self.auto_bet_var,
                                             bg='#16213e', fg='#ff4444',
                                             selectcolor='#0f3460',
                                             activebackground='#16213e',
                                             font=('Microsoft YaHei UI', 10, 'bold'),
                                             command=self.toggle_auto_bet)
-        self.auto_bet_check.grid(row=3, column=0, columnspan=3, pady=(8, 0), sticky='w')
+        self.auto_bet_check.grid(row=5, column=0, columnspan=3, pady=(8, 0), sticky='w')
 
         self.control_frame = tk.Frame(left_frame, bg='#16213e')
 
@@ -1116,9 +1438,9 @@ class BettingBotGUI:
                                    cursor='hand2', pady=8)
         self.start_btn.pack(fill='x', pady=(0, 5))
 
-        self.stop_btn = tk.Button(self.control_frame, text="⏹ 停止监���", bg='#ff4444',
+        self.stop_btn = tk.Button(self.control_frame, text="⏹ 停止监控", bg='#ff4444',
                                   fg='#ffffff', font=('Microsoft YaHei UI', 11, 'bold'),
-                                  relief='flat', command=self. stop_monitoring,
+                                  relief='flat', command=self.stop_monitoring,
                                   cursor='hand2', pady=8, state='disabled')
         self.stop_btn.pack(fill='x', pady=(0, 5))
 
@@ -1133,6 +1455,20 @@ class BettingBotGUI:
                                      relief='flat', command=self. diagnose_page,
                                      cursor='hand2', pady=6)
         self.diagnose_btn.pack(fill='x', pady=(0, 5))
+
+        # 新增：打印当前水位按钮
+        self.print_odds_btn = tk.Button(self.control_frame, text="📊 打印详细水位", bg='#9900ff',
+                                        fg='#ffffff', font=('Microsoft YaHei UI', 10, 'bold'),
+                                        relief='flat', command=self. print_current_odds,
+                                        cursor='hand2', pady=6)
+        self.print_odds_btn.pack(fill='x', pady=(0, 5))
+
+        # 新增：导出JSON按钮
+        self.export_json_btn = tk.Button(self.control_frame, text="💾 导出JSON", bg='#006699',
+                                         fg='#ffffff', font=('Microsoft YaHei UI', 10),
+                                         relief='flat', command=self.export_to_json,
+                                         cursor='hand2', pady=6)
+        self.export_json_btn.pack(fill='x', pady=(0, 5))
 
         self.right_frame = tk.Frame(main_container, bg='#16213e')
         self.right_frame.pack(side='right', fill='both', expand=True)
@@ -1159,7 +1495,7 @@ class BettingBotGUI:
         status_frame = tk.Frame(self.root, bg='#0f3460', height=30)
         status_frame.pack(side='bottom', fill='x')
 
-        self.status_label = tk.Label(status_frame, text="状态:  未登录", bg='#0f3460',
+        self.status_label = tk.Label(status_frame, text="状态: 未登录", bg='#0f3460',
                                     fg='#888888', font=('Microsoft YaHei UI', 10),
                                     anchor='w', padx=20)
         self.status_label.pack(side='left', fill='y')
@@ -1168,6 +1504,61 @@ class BettingBotGUI:
                                   fg='#00ff88', font=('Microsoft YaHei UI', 10),
                                   anchor='e', padx=20)
         self.time_label.pack(side='right', fill='y')
+
+    def toggle_detailed_print(self):
+        """切换详细打印选项"""
+        self.bot.enable_detailed_print = self.detailed_print_var.get()
+        status = "开启" if self.bot.enable_detailed_print else "关闭"
+        self. log(f"控制台详细打印已{status}")
+
+    def toggle_save_file(self):
+        """切换保存文件选项"""
+        self.bot.save_to_file = self.save_file_var.get()
+        status = "开启" if self. bot.save_to_file else "关闭"
+        self.log(f"保存数据到文件已{status}")
+
+    def print_current_odds(self):
+        """打印当前水位数据到控制台"""
+        if not self.bot.driver:
+            messagebox.showerror("错误", "请先登录")
+            return
+
+        def print_thread():
+            self.log("正在获取并打印详细水位数据...")
+            try:
+                data = self.bot.get_all_odds_data()
+                if data: 
+                    # 强制打印到控制台
+                    output = print_detailed_odds_data(data, print_to_console=True)
+                    self.log("✓ 详细水位数据已打印到控制台")
+                    self.log(f"  比赛数:  {len(data. get('matches', []))}")
+                    self.log(f"  水位数: {data. get('totalOdds', 0)}")
+                else:
+                    self.log("❌ 未获取到数据")
+            except Exception as e:
+                self.log(f"打印失败: {e}")
+
+        threading.Thread(target=print_thread, daemon=True).start()
+
+    def export_to_json(self):
+        """导出水位数据到JSON文件"""
+        if not self.bot.driver:
+            messagebox.showerror("错误", "请先登录")
+            return
+
+        def export_thread():
+            self.log("正在导出水位数据到JSON...")
+            try:
+                data = self.bot.get_all_odds_data()
+                if data:
+                    filename = export_odds_to_json(data)
+                    self.log(f"✓ 数据已导出到:  {filename}")
+                else:
+                    self.log("❌ 未获取到数据")
+            except Exception as e:
+                self.log(f"导出失败: {e}")
+
+        threading.Thread(target=export_thread, daemon=True).start()
 
     def create_odds_display_area(self, parent):
         if self.hint_label:
@@ -1180,7 +1571,7 @@ class BettingBotGUI:
         canvas_frame.pack(fill='both', expand=True)
 
         self.odds_canvas = tk.Canvas(canvas_frame, bg='#0f3460', highlightthickness=0)
-        scrollbar_y = tk.Scrollbar(canvas_frame, orient='vertical', command=self.odds_canvas.yview)
+        scrollbar_y = tk.Scrollbar(canvas_frame, orient='vertical', command=self.odds_canvas. yview)
         scrollbar_x = tk.Scrollbar(canvas_frame, orient='horizontal', command=self.odds_canvas.xview)
 
         self.odds_inner_frame = tk.Frame(self.odds_canvas, bg='#0f3460')
@@ -1193,9 +1584,9 @@ class BettingBotGUI:
 
         self.canvas_window = self.odds_canvas.create_window((0, 0), window=self.odds_inner_frame, anchor='nw')
 
-        self.odds_inner_frame.bind('<Configure>', lambda e: self.odds_canvas. configure(scrollregion=self. odds_canvas.bbox('all')))
+        self.odds_inner_frame.bind('<Configure>', lambda e: self.odds_canvas.configure(scrollregion=self.odds_canvas.bbox('all')))
         self.odds_canvas.bind('<Configure>', lambda e: self.odds_canvas.itemconfig(self.canvas_window, width=e.width))
-        self.odds_canvas.bind_all('<MouseWheel>', lambda e: self.odds_canvas. yview_scroll(int(-1*(e.delta/120)), 'units'))
+        self.odds_canvas.bind_all('<MouseWheel>', lambda e: self.odds_canvas.yview_scroll(int(-1*(e.delta/120)), 'units'))
 
     def update_odds_display(self, data):
         def update():
@@ -1237,7 +1628,7 @@ class BettingBotGUI:
                 bet_type_order = ['让球', '大/小', '独赢', '下个进球', '双方球队进球', '单/双', '队伍1进球', '队伍2进球',
                                   '让球上半场', '大/小上半场', '独赢上半场']
 
-                global_threshold = self.bot. threshold_settings.get('global', 0)
+                global_threshold = self.bot.threshold_settings.get('global', 0)
 
                 for match in matches:
                     match_id = match.get('id')
@@ -1284,7 +1675,7 @@ class BettingBotGUI:
                         type_data = odds_data[bet_type]
 
                         has_data = False
-                        if bet_type in ['独赢', '独赢上半场', '下个进球']:
+                        if bet_type in ['独赢', '独赢上半场', '下个进球']: 
                             has_data = type_data.get('team1') or type_data.get('team2') or type_data.get('draw') or type_data.get('none')
                         elif bet_type == '双方球队进球':
                             has_data = type_data.get('yes') or type_data.get('no')
@@ -1340,7 +1731,7 @@ class BettingBotGUI:
                                 odds_list = type_data. get(key, [])
                                 if odds_list:
                                     odds_str = ', '. join([self._format_odds_with_threshold(o, global_threshold) for o in odds_list[:3]])
-                                else:
+                                else: 
                                     odds_str = '-'
                                 fg_color = self._get_odds_color(odds_list, global_threshold)
                                 tk. Label(data_row, text=odds_str, bg='#0f3460', fg=fg_color,
@@ -1363,8 +1754,8 @@ class BettingBotGUI:
                             for key in ['team1', 'team2']:
                                 odds_list = type_data.get(key, [])
                                 if odds_list:
-                                    odds_str = ', '.join([self._format_odds_with_threshold(o, global_threshold) for o in odds_list[: 3]])
-                                else: 
+                                    odds_str = ', '.join([self._format_odds_with_threshold(o, global_threshold) for o in odds_list[:3]])
+                                else:
                                     odds_str = '-'
                                 fg_color = self._get_odds_color(odds_list, global_threshold)
                                 tk.Label(data_row, text=odds_str, bg='#0f3460', fg=fg_color,
@@ -1372,7 +1763,7 @@ class BettingBotGUI:
                             tk.Label(data_row, text='', bg='#0f3460', width=10).pack(side='left', padx=2)
 
                 self.odds_inner_frame.update_idletasks()
-                self. odds_canvas.configure(scrollregion=self.odds_canvas.bbox('all'))
+                self. odds_canvas.configure(scrollregion=self.odds_canvas. bbox('all'))
 
             except Exception as e:
                 print(f"更新显示出错: {e}")
@@ -1408,7 +1799,7 @@ class BettingBotGUI:
         self.root.after(0, update_log)
 
     def toggle_auto_bet(self):
-        if self.auto_bet_var. get():
+        if self.auto_bet_var.get():
             if messagebox.askyesno("确认", "确定启用自动下注吗？\n\n水位达到阈值时将自动下注！"):
                 self.bot.auto_bet_enabled = True
                 try:
@@ -1417,9 +1808,9 @@ class BettingBotGUI:
                 except: 
                     pass
                 self. log("⚠️ 自动下注已启用！")
-                self.log(f"   水位阈值: {self.bot.threshold_settings. get('global', 0)}")
+                self.log(f"   水位阈值: {self. bot.threshold_settings. get('global', 0)}")
             else:
-                self. auto_bet_var.set(False)
+                self.auto_bet_var.set(False)
         else:
             self.bot.auto_bet_enabled = False
             self.log("自动下注已关闭")
@@ -1482,7 +1873,7 @@ class BettingBotGUI:
             threshold = float(self.threshold_entry.get())
             self.bot.threshold_settings['global'] = threshold
             self.log(f"水位阈值设置为: {threshold}")
-        except:
+        except: 
             pass
 
         self.bot.bet_amount = amount
@@ -1545,7 +1936,7 @@ class BettingBotGUI:
                     self.log(f"  解析比赛数:  {len(matches)}")
                     self.log(f"  总水位数: {total_odds}")
                     self.log(f"  识别球队名:  {debug.get('teamNamesFound', 0)}")
-                    self.log(f"  识别水位: {debug.get('oddsFound', 0)}")
+                    self. log(f"  识别水位: {debug.get('oddsFound', 0)}")
 
                     self.log(f"\n📐 使用的布局配置:")
                     for bet_type, (x_start, x_end) in LAYOUT_CONFIG.items():
@@ -1577,7 +1968,7 @@ class BettingBotGUI:
                 self.log("诊断完成！")
                 self.log("="*50)
 
-            except Exception as e:
+            except Exception as e: 
                 self.log(f"\n诊断出错: {str(e)}")
                 import traceback
                 self.log(traceback.format_exc())
@@ -1605,10 +1996,10 @@ class BettingBotGUI:
                     self.update_odds_display(data)
 
                     total_team1 = sum(len(m.get('team1Odds', [])) for m in matches)
-                    total_team2 = sum(len(m.get('team2Odds', [])) for m in matches)
+                    total_team2 = sum(len(m. get('team2Odds', [])) for m in matches)
 
-                    self. log(f"\n✓ 获取到 {len(matches)} 场比赛, {total_odds} 个水位")
-                    self.log(f"  主队水位: {total_team1}, 客队水位: {total_team2}")
+                    self.log(f"\n✓ 获取到 {len(matches)} 场比赛, {total_odds} 个水位")
+                    self. log(f"  主队水位: {total_team1}, 客队水位: {total_team2}")
 
                     threshold = self.bot.threshold_settings.get('global', 0)
 
@@ -1618,9 +2009,9 @@ class BettingBotGUI:
                         odds_data = match.get('oddsData', {})
 
                         high_odds = []
-                        for bet_type, type_data in odds_data. items():
+                        for bet_type, type_data in odds_data.items():
                             for key, values in type_data. items():
-                                for o in values:
+                                for o in values: 
                                     if threshold > 0 and o['value'] >= threshold:
                                         high_odds.append(f"{bet_type}-{key}: {o['text']}")
 
