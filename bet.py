@@ -1,17 +1,17 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-滚球水位实时监控系统 v4.1
-- 修复登录按钮问题
-- 修复球队识别
-- 修复主客队水位归类
+滚球水位实时监控系统 v5.0
+- 使用绝对坐标（absolute_y = y + scrollY）
+- 基于表格行结构识别比赛
+- 优化球队名提取和水位归类
 """
 
 from selenium import webdriver
 from selenium. webdriver.common.by import By
-from selenium.webdriver.support. ui import WebDriverWait
+from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
-from selenium. common.exceptions import TimeoutException, NoSuchElementException
+from selenium.common.exceptions import TimeoutException, NoSuchElementException
 from selenium.webdriver.common.action_chains import ActionChains
 import time
 import pickle
@@ -28,9 +28,9 @@ URL = "https://mos055.com/"
 USERNAME = "LJJ123123"
 PASSWORD = "zz66688899"
 COOKIES_FILE = "mos055_cookies.pkl"
-CONFIG_FILE = "bet_config.json"
+CONFIG_FILE = "bet_config. json"
 
-# ================== 盘口布局配置 ==================
+# ================== 盘口布局配置（基于实际X坐标） ==================
 LAYOUT_CONFIG = {
     '让球': (420, 520),
     '大/小': (520, 620),
@@ -44,20 +44,25 @@ LAYOUT_CONFIG = {
 
 BET_TYPES_ORDER = ['让球', '大/小', '独赢', '让球上半场', '大/小上半场', '独赢上半场', '下个进球', '双方球队进球']
 
+# 排除关键词（不是球队名）
+EXCLUDE_KEYWORDS = ['让球', '大小', '大/小', '独赢', '进球', '单双', '单/双', '半场',
+                   '上半场', '下半场', '主', '客', '和', '���', '小', '是', '否', '无',
+                   '队伍', '双方', '角球', '罚牌', '波胆', '主要玩法', '让球&大小']
+
 
 class BettingBot:
     """投注机器人核心类"""
     
     def __init__(self):
         self.driver = None
-        self. is_running = False
-        self.is_logged_in = False
+        self.is_running = False
+        self. is_logged_in = False
         self.wait = None
         self.auto_bet_enabled = False
         self.bet_amount = 2
-        self. bet_history = []
+        self.bet_history = []
         self.current_matches = []
-        self. odds_threshold = 1.80
+        self.odds_threshold = 1.80
         self.raw_data = None
 
     def setup_driver(self, headless=False):
@@ -75,8 +80,8 @@ class BettingBot:
         if headless:
             options.add_argument("--headless=new")
 
-        self.driver = webdriver.Chrome(options=options)
-        self.wait = WebDriverWait(self.driver, 60)
+        self.driver = webdriver. Chrome(options=options)
+        self.wait = WebDriverWait(self. driver, 60)
 
         self.driver.execute_cdp_cmd('Page.addScriptToEvaluateOnNewDocument', {
             'source': '''
@@ -87,310 +92,165 @@ class BettingBot:
 
     def handle_password_popup(self, log_callback):
         """处理简易密码弹窗"""
-        log_callback("检测并处理简易密码弹窗...")
-
-        for attempt in range(15):
+        log_callback("检测并处理弹窗...")
+        for attempt in range(10):
             try:
-                popup_visible = self.driver.execute_script("""
-                    var popup = document.getElementById('c_alert_modify');
-                    if (popup) {
-                        var style = window.getComputedStyle(popup);
-                        return popup.offsetWidth > 0 && popup. offsetHeight > 0 &&
-                               style.display !== 'none' && style. visibility !== 'hidden';
-                    }
-                    return false;
-                """)
-
-                if not popup_visible:
-                    has_popup_text = self.driver.execute_script("""
-                        return document.body.innerText.includes('简易密码') ||
-                               document.body. innerText.includes('快速登入');
-                    """)
-                    if not has_popup_text:
-                        log_callback("✓ 弹窗已关闭或不存在")
-                        return True
-
                 result = self.driver.execute_script("""
                     var elements = document.querySelectorAll('div, button, span');
                     for (var elem of elements) {
-                        if (elem.innerText.trim() === '否' &&
-                            elem. offsetWidth > 0 && elem.offsetHeight > 0) {
+                        if (elem.innerText.trim() === '否' && elem.offsetWidth > 0 && elem.offsetHeight > 0) {
                             elem.click();
                             return {success: true};
                         }
                     }
                     return {success: false};
                 """)
-                if result.get('success'):
-                    log_callback(f"  第{attempt+1}次点击成功")
-                    time.sleep(2)
-                    continue
-
-                time.sleep(1)
+                if result. get('success'):
+                    log_callback(f"  ✓ 第{attempt+1}次关闭弹窗成功")
+                    time.sleep(1)
+                else:
+                    break
             except: 
-                time.sleep(1)
-
-        return False
+                pass
+            time.sleep(1)
+        return True
 
     def wait_for_matches_to_load(self, log_callback):
         """等待比赛数据加载"""
         log_callback("\n⏳ 等待比赛数据加载...")
-
         for attempt in range(10):
             time.sleep(2)
-            
             self.driver.execute_script("window.scrollTo(0, 500);")
-            time.sleep(0.5)
+            time.sleep(0.3)
             self.driver.execute_script("window.scrollTo(0, 1000);")
-            time.sleep(0.5)
+            time.sleep(0.3)
             self.driver.execute_script("window.scrollTo(0, 300);")
             time.sleep(1)
 
             has_matches = self.driver.execute_script("""
                 var text = document.body.innerText || '';
-                return text.includes('让球') || text.includes('独赢') || 
-                       text.includes('联赛') || text.includes('Esports');
+                return text.includes('让球') || text.includes('独赢') || text.includes('联赛');
             """)
 
             if has_matches:
                 log_callback(f"✓ 检测到比赛数据 (尝试 {attempt + 1}/10)")
                 time.sleep(2)
                 return True
-
             log_callback(f"  尝试 {attempt + 1}/10 - 等待中...")
-
-        log_callback("⚠️ 等待超时，继续尝试获取数据")
         return False
 
     def login(self, username, password, log_callback):
-        """登录 - 修复版"""
+        """登录 - 多种方法"""
         try:
             log_callback("正在访问登录页面...")
             self.driver.get(URL)
             time.sleep(8)
-            
-            # ========== 方法1: 使用ID查找 ==========
-            log_callback("尝试查找登录表单...")
-            
+
             # 输入用户名
-            username_filled = False
-            try:
-                username_field = self.wait.until(EC.presence_of_element_located((By.ID, "usr")))
-                self.driver.execute_script("arguments[0].value = arguments[1];", username_field, username)
-                username_filled = True
+            log_callback("尝试输入用户名...")
+            username_result = self.driver.execute_script(f"""
+                var inputs = document.querySelectorAll('input');
+                for(var i=0; i<inputs.length; i++){{
+                    var input = inputs[i];
+                    var type = input.type || '';
+                    var id = input.id || '';
+                    var placeholder = input.placeholder || '';
+                    if(type === 'text' && (id. includes('usr') || id.includes('user') || 
+                       placeholder.includes('用户') || placeholder.includes('帐号'))){{
+                        input.value = '{username}';
+                        input. dispatchEvent(new Event('input', {{bubbles: true}}));
+                        return {{success: true, id: id}};
+                    }}
+                }}
+                // 尝试第一个text输入框
+                for(var i=0; i<inputs.length; i++){{
+                    if(inputs[i].type === 'text' && inputs[i].offsetWidth > 0){{
+                        inputs[i]. value = '{username}';
+                        inputs[i].dispatchEvent(new Event('input', {{bubbles: true}}));
+                        return {{success: true, method: 'first_text'}};
+                    }}
+                }}
+                return {{success:  false}};
+            """)
+            
+            if username_result and username_result.get('success'):
                 log_callback(f"✓ 已输入用户名: {username}")
-            except: 
-                log_callback("  ID='usr' 未找到，尝试其他方式...")
-            
-            if not username_filled:
-                # 备用方法：使用JavaScript查找
-                result = self.driver.execute_script(f"""
-                    var inputs = document.querySelectorAll('input');
-                    for(var i=0; i<inputs.length; i++){{
-                        var input = inputs[i];
-                        var type = input.type || '';
-                        var placeholder = input.placeholder || '';
-                        var name = input.name || '';
-                        var id = input.id || '';
-                        
-                        if(type === 'text' && (placeholder. includes('用户') || placeholder.includes('帐号') || 
-                           placeholder.includes('账号') || name.includes('usr') || name.includes('user') ||
-                           id.includes('usr') || id.includes('user'))){{
-                            input.value = '{username}';
-                            input. dispatchEvent(new Event('input', {{bubbles: true}}));
-                            return {{success: true, method: 'js_search'}};
-                        }}
-                    }}
-                    // 如果没找到，尝试第一个text输入框
-                    for(var i=0; i<inputs.length; i++){{
-                        if(inputs[i].type === 'text' && inputs[i].offsetWidth > 0){{
-                            inputs[i]. value = '{username}';
-                            inputs[i].dispatchEvent(new Event('input', {{bubbles: true}}));
-                            return {{success: true, method:  'first_text'}};
-                        }}
-                    }}
-                    return {{success:  false}};
-                """)
-                if result and result.get('success'):
-                    log_callback(f"✓ 已输入用户名 (方法:  {result.get('method')})")
-                    username_filled = True
-                else:
-                    log_callback("✗ 无法找到用户名输入框")
-                    return False
-            
-            # 输入密码
-            password_filled = False
-            try: 
-                password_field = self.wait.until(EC.presence_of_element_located((By.ID, "pwd")))
-                self.driver.execute_script("arguments[0].value = arguments[1];", password_field, password)
-                password_filled = True
-                log_callback("✓ 已输入密码")
-            except:
-                log_callback("  ID='pwd' 未找到，尝试其他方式...")
-            
-            if not password_filled: 
-                result = self.driver.execute_script(f"""
-                    var inputs = document.querySelectorAll('input[type="password"]');
-                    for(var i=0; i<inputs.length; i++){{
-                        if(inputs[i].offsetWidth > 0){{
-                            inputs[i].value = '{password}';
-                            inputs[i].dispatchEvent(new Event('input', {{bubbles: true}}));
-                            return {{success: true}};
-                        }}
-                    }}
-                    return {{success:  false}};
-                """)
-                if result and result.get('success'):
-                    log_callback("✓ 已输入密码 (备用方法)")
-                    password_filled = True
-                else:
-                    log_callback("✗ 无法找到密码输入框")
-                    return False
-            
-            time.sleep(1)
-            
-            # ========== 点击登录按钮 - 多种方法 ==========
-            log_callback("尝试点击登录按钮...")
-            login_clicked = False
-            
-            # 方法1: 通过ID
-            try:
-                login_btn = self.driver.find_element(By.ID, "btn_login")
-                if login_btn. is_displayed():
-                    login_btn.click()
-                    login_clicked = True
-                    log_callback("✓ 已点击登录按钮 (ID='btn_login')")
-            except:
-                pass
-            
-            # 方法2: 通过class
-            if not login_clicked:
-                try:
-                    buttons = self.driver.find_elements(By.CSS_SELECTOR, "button.btn_login, . login-btn, .btn-login")
-                    for btn in buttons:
-                        if btn. is_displayed():
-                            btn.click()
-                            login_clicked = True
-                            log_callback("✓ 已点击登录按钮 (CSS)")
-                            break
-                except:
-                    pass
-            
-            # 方法3: 通过文本内容
-            if not login_clicked:
-                try:
-                    buttons = self.driver.find_elements(By.TAG_NAME, "button")
-                    for btn in buttons:
-                        text = btn.text.strip()
-                        if text in ['登录', '登入', '立即登录', 'Login', '登 录']:
-                            if btn.is_displayed():
-                                btn.click()
-                                login_clicked = True
-                                log_callback(f"✓ 已点击登录按钮 (文本='{text}')")
-                                break
-                except:
-                    pass
-            
-            # 方法4: JavaScript查找并点击
-            if not login_clicked:
-                result = self.driver.execute_script("""
-                    // 查找登录按钮
-                    var selectors = [
-                        '#btn_login',
-                        'button[type="submit"]',
-                        '. btn_login',
-                        '.login-btn',
-                        'button.login',
-                        'input[type="submit"]'
-                    ];
-                    
-                    for(var i=0; i<selectors.length; i++){
-                        var elem = document.querySelector(selectors[i]);
-                        if(elem && elem.offsetWidth > 0){
-                            elem.click();
-                            return {success: true, selector: selectors[i]};
-                        }
-                    }
-                    
-                    // 通过文本查找
-                    var allElements = document.querySelectorAll('button, div, span, a, input');
-                    var loginTexts = ['登录', '登入', '立即登录', 'Login', '登 录', '确定'];
-                    
-                    for(var i=0; i<allElements.length; i++){
-                        var el = allElements[i];
-                        var text = (el.innerText || el.value || '').trim();
-                        
-                        for(var j=0; j<loginTexts.length; j++){
-                            if(text === loginTexts[j] && el.offsetWidth > 0 && el.offsetHeight > 0){
-                                el.click();
-                                return {success: true, text: text};
-                            }
-                        }
-                    }
-                    
-                    return {success: false};
-                """)
-                
-                if result and result.get('success'):
-                    login_clicked = True
-                    if result.get('selector'):
-                        log_callback(f"✓ 已点击登录按钮 (JS:  {result.get('selector')})")
-                    else:
-                        log_callback(f"✓ 已点击登录按钮 (JS文本: {result.get('text')})")
-            
-            # 方法5: 模拟回车
-            if not login_clicked:
-                log_callback("  尝试使用回车键登录...")
-                try:
-                    from selenium.webdriver.common.keys import Keys
-                    password_inputs = self.driver.find_elements(By.CSS_SELECTOR, 'input[type="password"]')
-                    for inp in password_inputs:
-                        if inp.is_displayed():
-                            inp.send_keys(Keys.RETURN)
-                            login_clicked = True
-                            log_callback("✓ 已发送回车键")
-                            break
-                except:
-                    pass
-            
-            if not login_clicked:
-                log_callback("✗ 无法找到或点击登录按钮")
-                # 打印页面上所有按钮信息用于调试
-                self.driver.execute_script("""
-                    console.log('=== 页面按钮调试 ===');
-                    var buttons = document.querySelectorAll('button, input[type="submit"], . btn');
-                    buttons.forEach(function(btn, idx){
-                        console.log(idx + ': ' + btn.tagName + ' | id=' + btn.id + ' | class=' + btn.className + ' | text=' + btn.innerText);
-                    });
-                """)
+            else:
+                log_callback("✗ 未找到用户名输入框")
                 return False
+
+            # 输入密码
+            password_result = self.driver.execute_script(f"""
+                var inputs = document.querySelectorAll('input[type="password"]');
+                for(var i=0; i<inputs.length; i++){{
+                    if(inputs[i].offsetWidth > 0){{
+                        inputs[i].value = '{password}';
+                        inputs[i].dispatchEvent(new Event('input', {{bubbles: true}}));
+                        return {{success: true}};
+                    }}
+                }}
+                return {{success: false}};
+            """)
             
+            if password_result and password_result.get('success'):
+                log_callback("✓ 已输入密码")
+            else:
+                log_callback("✗ 未找到密码输入框")
+                return False
+
+            time.sleep(1)
+
+            # 点击登录按钮 - 多种方法
+            log_callback("尝试点击登录按钮...")
+            login_result = self.driver.execute_script("""
+                // 方法1: ID
+                var btn = document.getElementById('btn_login');
+                if(btn && btn.offsetWidth > 0) { btn.click(); return {success: true, method: 'id'}; }
+                
+                // 方法2: 文本匹配
+                var allElements = document.querySelectorAll('button, div, span, a, input');
+                var loginTexts = ['登录', '登入', '立即登录', 'Login', '登 录'];
+                for(var i=0; i<allElements.length; i++){
+                    var el = allElements[i];
+                    var text = (el.innerText || el.value || '').trim();
+                    for(var j=0; j<loginTexts.length; j++){
+                        if(text === loginTexts[j] && el.offsetWidth > 0 && el.offsetHeight > 0){
+                            el.click();
+                            return {success: true, method: 'text', text: text};
+                        }
+                    }
+                }
+                
+                // 方法3: submit按钮
+                var submits = document.querySelectorAll('button[type="submit"], input[type="submit"]');
+                for(var i=0; i<submits.length; i++){
+                    if(submits[i].offsetWidth > 0) { submits[i].click(); return {success: true, method: 'submit'}; }
+                }
+                
+                return {success:  false};
+            """)
+
+            if login_result and login_result.get('success'):
+                log_callback(f"✓ 已点击登录按钮 (方法: {login_result.get('method')})")
+            else:
+                # 尝试回车
+                log_callback("  尝试使用回车键...")
+                self.driver.execute_script("""
+                    var pwdInputs = document.querySelectorAll('input[type="password"]');
+                    if(pwdInputs.length > 0){
+                        var event = new KeyboardEvent('keypress', {key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true});
+                        pwdInputs[0].dispatchEvent(event);
+                    }
+                """)
+                log_callback("✓ 已发送回车键")
+
             # 等待登录响应
             log_callback("\n等待登录响应...")
             time.sleep(10)
-            
+
             # 处理弹窗
             self.handle_password_popup(log_callback)
             time.sleep(3)
-            
-            # 等待主页面加载
-            log_callback("\n等待主页面加载...")
-            for i in range(10):
-                time.sleep(5)
-                elapsed = (i + 1) * 5
-                log_callback(f"  已等待 {elapsed} 秒...")
-                
-                # 检查是否登录成功
-                is_logged = self.driver.execute_script("""
-                    return document.body.innerText.includes('滚球') || 
-                           document.body.innerText.includes('余额') ||
-                           document.body.innerText.includes('账户');
-                """)
-                if is_logged:
-                    log_callback("✓ 检测到登录成功")
-                    break
-
-            log_callback(f"\n当前URL: {self.driver.current_url}")
 
             # 保存Cookies
             cookies = self.driver.get_cookies()
@@ -399,29 +259,20 @@ class BettingBot:
             log_callback("✓ Cookies 已保存")
 
             # 进入滚球页面
-            log_callback("\n进入滚球页面...")
+            log_callback("\n进入滚球��面...")
             time.sleep(3)
-
-            click_result = self.driver.execute_script("""
+            self.driver.execute_script("""
                 var elements = document.querySelectorAll('*');
                 for (var elem of elements) {
                     var text = (elem.textContent || '').trim();
-                    var visible = elem.offsetWidth > 0 && elem.offsetHeight > 0;
-                    if (visible && text === '滚球') {
-                        elem.scrollIntoView({behavior: 'smooth', block:  'center'});
+                    if (text === '滚球' && elem.offsetWidth > 0) {
                         elem.click();
-                        return {success: true};
+                        return;
                     }
                 }
-                return {success: false};
             """)
 
-            if click_result. get('success'):
-                log_callback("✓ 已点击滚球")
-
-            log_callback("等待滚球页面加载...")
-            time.sleep(10)
-
+            time.sleep(8)
             self.wait_for_matches_to_load(log_callback)
 
             self.is_logged_in = True
@@ -429,23 +280,26 @@ class BettingBot:
             return True
 
         except Exception as e:
-            log_callback(f"\n✗ 登录失败:  {str(e)}")
+            log_callback(f"\n✗ 登录失败: {str(e)}")
             import traceback
             log_callback(traceback.format_exc())
             return False
 
     def get_raw_page_data(self):
-        """获取页面所有原始数据"""
-        try: 
+        """获取页面所有原始数据 - 使用绝对坐标"""
+        try:
+            # 先滚动页面确保加载
             self.driver.execute_script("window.scrollTo(0, 500);")
             time.sleep(0.3)
             self.driver.execute_script("window.scrollTo(0, 1000);")
             time.sleep(0.3)
-            self.driver.execute_script("window.scrollTo(0, 400);")
+            self.driver.execute_script("window.scrollTo(0, 300);")
             time.sleep(0.5)
 
             raw_data = self.driver.execute_script("""
                 function getRawPageData() {
+                    var scrollY = window.scrollY || window.pageYOffset || 0;
+                    var scrollX = window.scrollX || window. pageXOffset || 0;
                     var elements = [];
                     var allElements = document.querySelectorAll('*');
                     
@@ -454,9 +308,15 @@ class BettingBot:
                             var rect = elem.getBoundingClientRect();
                             if (rect.width <= 0 || rect.height <= 0) return;
                             if (rect.width > 500 || rect.height > 100) return;
-                            if (rect.y < 50 || rect.y > 3000) return;
-                            if (rect.x < 0 || rect.x > 1600) return;
                             
+                            // 计算绝对坐标
+                            var absoluteY = rect.y + scrollY;
+                            var absoluteX = rect.x + scrollX;
+                            
+                            if (absoluteY < 100 || absoluteY > 5000) return;
+                            if (absoluteX < 0 || absoluteX > 1600) return;
+                            
+                            // 获取直接文本
                             var text = '';
                             for (var i = 0; i < elem.childNodes.length; i++) {
                                 if (elem.childNodes[i]. nodeType === 3) {
@@ -469,38 +329,44 @@ class BettingBot:
                                 text = (elem.textContent || '').trim();
                             }
                             
-                            if (! text || text. length > 60) return;
+                            if (! text || text.length > 60) return;
                             if ((text.match(/\\n/g) || []).length > 2) return;
                             
                             elements.push({
                                 text: text,
                                 x: Math.round(rect.x),
-                                y: Math.round(rect. y),
+                                y: Math.round(rect.y),
+                                absolute_x: Math.round(absoluteX),
+                                absolute_y:  Math.round(absoluteY),
                                 width: Math.round(rect.width),
-                                height: Math.round(rect.height),
+                                height: Math.round(rect. height),
                                 tag: elem.tagName
                             });
                         } catch(e) {}
                     });
                     
+                    // 去重
                     var seen = new Set();
                     var uniqueElements = [];
                     elements.forEach(function(e) {
-                        var key = e.text + '_' + Math.round(e.x/5)*5 + '_' + Math. round(e.y/5)*5;
+                        var key = e.text + '_' + Math.round(e.absolute_x/5)*5 + '_' + Math. round(e.absolute_y/5)*5;
                         if (!seen.has(key)) {
                             seen.add(key);
-                            uniqueElements.push(e);
+                            uniqueElements. push(e);
                         }
                     });
                     
+                    // 按绝对Y坐标排序
                     uniqueElements.sort(function(a, b) {
-                        if (Math.abs(a.y - b.y) < 10) return a.x - b.x;
-                        return a.y - b.y;
+                        if (Math.abs(a.absolute_y - b.absolute_y) < 10) return a.absolute_x - b.absolute_x;
+                        return a.absolute_y - b.absolute_y;
                     });
                     
                     return {
                         elements: uniqueElements,
-                        total: uniqueElements.length,
+                        total:  uniqueElements.length,
+                        scrollY: scrollY,
+                        scrollX: scrollX,
                         timestamp: new Date().toISOString()
                     };
                 }
@@ -512,167 +378,226 @@ class BettingBot:
         except Exception as e:
             return {'elements': [], 'total': 0, 'error': str(e)}
 
-    def analyze_raw_data(self, raw_data, log_callback=None):
-        """分析原始数据，提取比赛信息"""
-        if not raw_data or not raw_data.get('elements'):
-            return {'matches': [], 'totalOdds': 0}
+    def extract_team_names(self, match_elements):
+        """提取球队名（排除干扰项）"""
+        candidates = []
+        
+        for elem in match_elements:
+            text = elem['text']. strip()
+            x = elem. get('absolute_x', elem.get('x', 0))
+            
+            # X坐标范围过滤（球队名通常在左侧20-200）
+            if not (20 < x < 250):
+                continue
+            
+            # 长度过滤
+            if len(text) < 2 or len(text) > 30:
+                continue
+            
+            # 排除关键词
+            if any(kw in text for kw in EXCLUDE_KEYWORDS):
+                continue
+            
+            # 排除纯数字、时间、比分
+            if re.match(r'^[\d: .\-+/\s]+$', text):
+                continue
+            
+            # 必须包含中文或英文字母
+            has_chinese = any('\u4e00' <= c <= '\u9fff' for c in text)
+            has_english = any(c.isalpha() for c in text)
+            if not has_chinese and not has_english:
+                continue
+            
+            candidates.append(elem)
+        
+        # 按Y坐标排序，取前2个
+        candidates.sort(key=lambda x: x.get('absolute_y', x.get('y', 0)))
+        
+        # 确保两个球队名不同
+        if len(candidates) >= 2:
+            team1 = candidates[0]
+            for c in candidates[1:]:
+                if c['text'] != team1['text']:
+                    return [team1, c]
+            return candidates[: 2]
+        
+        return candidates[: 2]
 
-        elements = raw_data['elements']
+    def classify_odds_by_team(self, odds_y, team1_y, team2_y):
+        """根据Y坐标判断水位属于主队还是客队"""
+        # 允许误差±25px
+        if abs(odds_y - team1_y) < 25:
+            return 'home'
+        elif abs(odds_y - team2_y) < 25:
+            return 'away'
+        else:
+            # 距离哪个更近
+            return 'home' if abs(odds_y - team1_y) < abs(odds_y - team2_y) else 'away'
 
+    def extract_matches_by_rows(self, elements):
+        """基于表格行结构识别比赛"""
+        # 正则表达式
         odds_pattern = re.compile(r'^\d{1,2}\.\d{1,2}$')
-        handicap_pattern = re.compile(r'^[+-]?\d+/?\d*\. ?\d*$')
         time_pattern = re.compile(r'(上半场|下半场|中场|半场)\s*\d+:\d+|\d+:\d+')
         score_pattern = re.compile(r'^\d{1,2}$')
         league_pattern = re.compile(r'(联赛|杯|甲组|超级|Esports|FIFA|女)', re.IGNORECASE)
-
-        exclude_keywords = ['让球', '大小', '大/小', '独赢', '进球', '单双', '单/双', '半场',
-                           '上半场', '下半场', '主', '客', '和', '大', '小', '是', '否', '无',
-                           '队伍', '双方', '角球', '罚牌', '波胆', '主要玩法']
-
-        match_starts = []
-        for elem in elements:
-            if time_pattern.search(elem['text']) and elem['x'] < 250:
-                is_duplicate = False
-                for ms in match_starts:
-                    if abs(ms['y'] - elem['y']) < 60:
-                        is_duplicate = True
-                        break
-                if not is_duplicate:
-                    match_starts.append({'time': elem['text'], 'y': elem['y'], 'x': elem['x']})
-
-        match_starts.sort(key=lambda x: x['y'])
-
+        
+        # 1. 按Y坐标分组（约30px为一行）
+        rows = {}
+        for elem in elements: 
+            row_key = round(elem.get('absolute_y', elem.get('y', 0)) / 30) * 30
+            if row_key not in rows:
+                rows[row_key] = []
+            rows[row_key].append(elem)
+        
+        # 2. 识别比赛起始行（包含时间标记，如"上半场 32:18"）
+        match_start_rows = []
+        for y, row_elems in sorted(rows.items()):
+            has_time = any(time_pattern.search(e['text']) for e in row_elems)
+            # 时间元素通常在左侧
+            if has_time:
+                time_elem = next((e for e in row_elems if time_pattern.search(e['text'])), None)
+                if time_elem and time_elem. get('absolute_x', time_elem.get('x', 0)) < 300:
+                    match_start_rows.append(y)
+        
+        # 3. 查找联赛标题
+        league_info = {}
+        for elem in elements: 
+            if league_pattern.search(elem['text']) and len(elem['text']) < 50:
+                y = elem.get('absolute_y', elem.get('y', 0))
+                league_info[y] = elem['text']
+        
+        # 4. 为每场比赛提取数据
         matches = []
         total_odds_count = 0
-
-        for idx, match_start in enumerate(match_starts):
-            start_y = match_start['y'] - 40
-            end_y = match_starts[idx + 1]['y'] - 30 if idx + 1 < len(match_starts) else start_y + 180
-
-            match_elements = [e for e in elements if start_y <= e['y'] <= end_y]
-
+        
+        for i, match_y in enumerate(match_start_rows):
+            # 确定比赛范围（到下一场比赛或+150px）
+            end_y = match_start_rows[i+1] - 20 if i+1 < len(match_start_rows) else match_y + 150
+            
+            # 提取该比赛的所有元素
+            match_elements = [e for e in elements if match_y - 10 <= e.get('absolute_y', e.get('y', 0)) < end_y]
+            
+            if not match_elements:
+                continue
+            
+            # 初始化比赛数据
             match = {
-                'id': idx + 1,
+                'id': i + 1,
                 'league': '',
-                'time': match_start['time'],
-                'team1': '', 'team2': '',
-                'score1': '', 'score2': '',
-                'team1_y': 0, 'team2_y': 0,
-                'odds':  {bt: {'handicap': '', 'home': [], 'away': [], 'draw': []} for bt in BET_TYPES_ORDER}
+                'time': '',
+                'team1': '',
+                'team2': '',
+                'score1': '',
+                'score2':  '',
+                'team1_y': 0,
+                'team2_y': 0,
+                'odds':  {bt: {'handicap': '', 'home': [], 'away': []} for bt in BET_TYPES_ORDER}
             }
-
-            for elem in elements:
-                if elem['y'] < start_y and league_pattern.search(elem['text']) and len(elem['text']) < 50:
-                    match['league'] = elem['text']
-
-            team_candidates = []
+            
+            # 查找联赛（向上查找最近的联赛标题）
+            for ly in sorted(league_info.keys(), reverse=True):
+                if ly < match_y:
+                    match['league'] = league_info[ly]
+                    break
+            
+            # 提取时间
             for elem in match_elements:
-                text = elem['text']. strip()
-                x = elem['x']
-
-                if x < 50 or x > 280:
-                    continue
-                if len(text) < 2 or len(text) > 40:
-                    continue
-                if odds_pattern.match(text) or score_pattern.match(text):
-                    continue
-                if re.match(r'^[\d: ]+$', text) or re.match(r'^[+-]?\d', text):
-                    continue
-
-                is_keyword = any(kw in text for kw in exclude_keywords)
-                if is_keyword:
-                    continue
-
-                has_chinese = any('\u4e00' <= c <= '\u9fff' for c in text)
-                has_english = any(c.isalpha() for c in text)
-                if not has_chinese and not has_english: 
-                    continue
-
-                team_candidates.append(elem)
-
-            team_candidates.sort(key=lambda x: x['y'])
-
-            if len(team_candidates) >= 2:
-                match['team1'] = team_candidates[0]['text']
-                match['team1_y'] = team_candidates[0]['y']
-
-                for candidate in team_candidates[1:]: 
-                    if candidate['text'] != match['team1'] and abs(candidate['y'] - match['team1_y']) > 15:
-                        match['team2'] = candidate['text']
-                        match['team2_y'] = candidate['y']
-                        break
-
-                if not match['team2'] and len(team_candidates) >= 2:
-                    match['team2'] = team_candidates[1]['text']
-                    match['team2_y'] = team_candidates[1]['y']
-
-            elif len(team_candidates) == 1:
-                match['team1'] = team_candidates[0]['text']
-                match['team1_y'] = team_candidates[0]['y']
-
-            scores = [e for e in match_elements if e['x'] < 80 and score_pattern.match(e['text']) and int(e['text']) <= 20]
-            scores.sort(key=lambda x: x['y'])
-            if scores:
+                if time_pattern.search(elem['text']):
+                    match['time'] = elem['text']
+                    break
+            
+            # 提取球队名
+            team_elems = self.extract_team_names(match_elements)
+            if len(team_elems) >= 1:
+                match['team1'] = team_elems[0]['text']
+                match['team1_y'] = team_elems[0]. get('absolute_y', team_elems[0].get('y', 0))
+            if len(team_elems) >= 2:
+                match['team2'] = team_elems[1]['text']
+                match['team2_y'] = team_elems[1].get('absolute_y', team_elems[1].get('y', 0))
+            
+            # 如果没有找到team2_y，估算
+            if match['team1_y'] and not match['team2_y']: 
+                match['team2_y'] = match['team1_y'] + 35
+            
+            # 提取比分
+            scores = []
+            for elem in match_elements:
+                x = elem.get('absolute_x', elem.get('x', 0))
+                if x < 80 and score_pattern.match(elem['text']):
+                    val = int(elem['text'])
+                    if val <= 20:
+                        scores.append(elem)
+            scores.sort(key=lambda x: x.get('absolute_y', x.get('y', 0)))
+            if len(scores) >= 1:
                 match['score1'] = scores[0]['text']
             if len(scores) >= 2:
                 match['score2'] = scores[1]['text']
-
-            team1_y = match['team1_y'] if match['team1_y'] else start_y + 40
-            team2_y = match['team2_y'] if match['team2_y'] else team1_y + 40
-
-            team1_y_min, team1_y_max = team1_y - 25, team1_y + 25
-            team2_y_min, team2_y_max = team2_y - 25, team2_y + 25
-
+            
+            # 提取水位
+            team1_y = match['team1_y']
+            team2_y = match['team2_y']
+            
             for elem in match_elements:
-                if elem['x'] < 400: 
+                x = elem.get('absolute_x', elem.get('x', 0))
+                y = elem.get('absolute_y', elem.get('y', 0))
+                text = elem['text']
+                
+                # 水位通常在X > 400的区域
+                if x < 400:
                     continue
-
-                text, x, y = elem['text'], elem['x'], elem['y']
-
+                
+                # 确定盘口类型
                 bet_type = None
                 for bt, (x_min, x_max) in LAYOUT_CONFIG.items():
                     if x_min <= x < x_max:
                         bet_type = bt
                         break
-
+                
                 if not bet_type:
                     continue
-
+                
+                # 判断是水位还是盘口值
                 if odds_pattern.match(text):
-                    odds_obj = {'value': float(text), 'text': text, 'x': x, 'y': y}
-
-                    is_team1_row = (team1_y_min <= y <= team1_y_max)
-                    is_team2_row = (team2_y_min <= y <= team2_y_max)
-
-                    if is_team1_row: 
-                        match['odds'][bet_type]['home'].append(odds_obj)
-                    elif is_team2_row:
-                        match['odds'][bet_type]['away'].append(odds_obj)
-                    else:
-                        dist1 = abs(y - team1_y)
-                        dist2 = abs(y - team2_y)
-                        if dist1 < dist2:
-                            match['odds'][bet_type]['home']. append(odds_obj)
-                        else:
-                            match['odds'][bet_type]['away']. append(odds_obj)
-
+                    odds_obj = {
+                        'value': float(text),
+                        'text': text,
+                        'x': x,
+                        'y': y
+                    }
+                    
+                    # 根据Y坐标判断主客队
+                    team_type = self.classify_odds_by_team(y, team1_y, team2_y)
+                    match['odds'][bet_type][team_type]. append(odds_obj)
                     total_odds_count += 1
-
-                elif handicap_pattern.match(text) or text.startswith('大') or text.startswith('小'):
+                
+                elif re.match(r'^[+-]?\d', text) or text.startswith('大') or text.startswith('小'):
                     match['odds'][bet_type]['handicap'] = text
-
+            
+            # 只添加有效比赛
             if match['team1'] or total_odds_count > 0:
                 matches.append(match)
-
-        self.current_matches = matches
-        return {'matches': matches, 'totalOdds': total_odds_count, 'statistics': {'total_matches': len(matches), 'total_odds': total_odds_count}}
+        
+        return matches, total_odds_count
 
     def get_all_odds_data(self):
         """综合获取数据"""
         raw_data = self.get_raw_page_data()
-        analyzed_data = self.analyze_raw_data(raw_data)
-        analyzed_data['_raw'] = raw_data
-        return analyzed_data
+        elements = raw_data. get('elements', [])
+        
+        matches, total_odds = self.extract_matches_by_rows(elements)
+        
+        self.current_matches = matches
+        
+        return {
+            'matches': matches,
+            'totalOdds': total_odds,
+            'statistics': {
+                'total_matches': len(matches),
+                'total_odds': total_odds
+            },
+            '_raw':  raw_data
+        }
 
     def click_odds(self, odds_text, x, y, log_callback):
         """点击水位"""
@@ -682,6 +607,7 @@ class BettingBot:
                 var targetText = '{odds_text}';
                 var targetX = {x};
                 var targetY = {y};
+                var scrollY = window.scrollY || 0;
                 var elements = document.querySelectorAll('span, td, div, a');
                 var found = null;
                 var minDist = 9999;
@@ -690,16 +616,17 @@ class BettingBot:
                     var text = el.textContent. trim();
                     if(text === targetText && el.offsetWidth > 0){{
                         var rect = el.getBoundingClientRect();
-                        var dist = Math.abs(rect.x - targetX) + Math.abs(rect.y - targetY);
+                        var absY = rect.y + scrollY;
+                        var dist = Math. abs(rect.x - targetX) + Math.abs(absY - targetY);
                         if(dist < minDist){{ minDist = dist; found = el; }}
                     }}
                 }}
-                if(found && minDist < 100){{
+                if(found && minDist < 150){{
                     found.scrollIntoView({{behavior: 'smooth', block: 'center'}});
-                    found.click();
+                    setTimeout(function(){{ found.click(); }}, 300);
                     return {{success: true}};
                 }}
-                return {{success:  false}};
+                return {{success: false}};
             """)
             if result and result.get('success'):
                 log_callback("  ✓ 点击成功")
@@ -742,14 +669,14 @@ class BettingBot:
                     var text = buttons[i].textContent. trim();
                     if((text === '下注' || text === '投注' || text === '确认下注') && buttons[i].offsetWidth > 0){
                         buttons[i].click();
-                        return {success: true, text: text};
+                        return {success: true};
                     }
                 }
-                return {success:  false};
+                return {success: false};
             """)
             
             if bet_result and bet_result.get('success'):
-                log_callback(f"  ✓ 点击下注按钮")
+                log_callback("  ✓ 点击下注按钮")
                 time.sleep(1)
                 return True
             
@@ -759,17 +686,14 @@ class BettingBot:
             log_callback(f"  ✗ 下注出错: {e}")
             return False
 
-    def close_bet_panel(self, log_callback=None):
+    def close_bet_panel(self):
         """关闭下注面板"""
-        try:
+        try: 
             self.driver.execute_script("""
                 var closes = document.querySelectorAll('[class*="close"], button');
                 for(var i=0; i<closes.length; i++){
                     var el = closes[i];
-                    if(el.offsetWidth > 0 && el.offsetWidth < 50){
-                        el.click();
-                        return;
-                    }
+                    if(el.offsetWidth > 0 && el.offsetWidth < 50){ el.click(); return; }
                 }
             """)
             time.sleep(0.5)
@@ -787,24 +711,27 @@ class BettingBot:
             team1, team2 = match. get('team1', ''), match.get('team2', '')
             league = match.get('league', '')
             
-            for bet_type, type_odds in match. get('odds', {}).items():
-                for odds in type_odds.get('home', []) + type_odds.get('away', []):
-                    if odds['value'] >= threshold and odds['value'] < 50:
-                        bet_key = f"{team1}_{team2}_{bet_type}_{odds['text']}_{datetime.now().strftime('%Y%m%d%H')}"
-                        
-                        if bet_key in self.bet_history:
-                            continue
-                        
-                        log_callback(f"\n🎯 触发自动下注!  {team1} vs {team2} | {bet_type} | {odds['text']}")
-                        
-                        if self.click_odds(odds['text'], odds['x'], odds['y'], log_callback):
-                            time.sleep(1)
-                            if self.place_bet(self.bet_amount, log_callback):
-                                self.bet_history. append(bet_key)
-                                log_callback(f"  ✓✓ 下注成功!")
+            for bet_type, type_odds in match.get('odds', {}).items():
+                for team_type in ['home', 'away']: 
+                    for odds in type_odds. get(team_type, []):
+                        if odds['value'] >= threshold and odds['value'] < 50:
+                            bet_key = f"{team1}_{team2}_{bet_type}_{team_type}_{odds['text']}_{datetime.now().strftime('%Y%m%d%H')}"
+                            
+                            if bet_key in self.bet_history:
+                                continue
+                            
+                            team_name = team1 if team_type == 'home' else team2
+                            log_callback(f"\n🎯 触发自动下注!  {league}")
+                            log_callback(f"   {team1} vs {team2} | {bet_type} | {team_name} | {odds['text']}")
+                            
+                            if self. click_odds(odds['text'], odds['x'], odds['y'], log_callback):
+                                time.sleep(1)
+                                if self.place_bet(self.bet_amount, log_callback):
+                                    self.bet_history. append(bet_key)
+                                    log_callback(f"  ✓✓ 下注成功!")
+                                    self.close_bet_panel()
+                                    return True
                                 self.close_bet_panel()
-                                return True
-                            self.close_bet_panel()
         return False
 
     def monitor_realtime(self, interval, log_callback, update_callback):
@@ -814,7 +741,7 @@ class BettingBot:
         while self.is_running:
             try: 
                 data = self.get_all_odds_data()
-                if data:
+                if data: 
                     update_callback(data)
                     matches = data.get('matches', [])
                     total_odds = data.get('totalOdds', 0)
@@ -849,7 +776,7 @@ class BettingBotGUI:
     
     def __init__(self, root):
         self.root = root
-        self.root.title("滚球水位实时监控系统 v4.1")
+        self.root.title("滚球水位实时监控系统 v5.0")
         self.root.geometry("1850x950")
         self.root.configure(bg='#1a1a2e')
         
@@ -864,7 +791,7 @@ class BettingBotGUI:
         try:
             if os.path.exists(CONFIG_FILE):
                 with open(CONFIG_FILE, 'r', encoding='utf-8') as f:
-                    config = json.load(f)
+                    config = json. load(f)
                     self.bot.odds_threshold = config.get('threshold', 1.80)
                     self.bot. bet_amount = config.get('bet_amount', 2)
                     self.threshold_entry.delete(0, tk.END)
@@ -892,9 +819,9 @@ class BettingBotGUI:
         title_frame = tk.Frame(self.root, bg='#1a1a2e')
         title_frame.pack(fill='x', padx=20, pady=10)
         
-        tk.Label(title_frame, text="🎯 滚球水位实时监控系统 v4.1", bg='#1a1a2e', fg='#00ff88',
+        tk.Label(title_frame, text="🎯 滚球水位实时监控系统 v5.0", bg='#1a1a2e', fg='#00ff88',
                 font=('Microsoft YaHei UI', 22, 'bold')).pack()
-        tk.Label(title_frame, text="修复登录 | 修复球队识别 | 修复主客队水位 | 自动下注",
+        tk.Label(title_frame, text="绝对坐标定位 | 表格行识别 | 精确主客队归类 | 自动下注",
                 bg='#1a1a2e', fg='#888', font=('Microsoft YaHei UI', 10)).pack()
         
         # 主容器
@@ -935,8 +862,8 @@ class BettingBotGUI:
                                  fg='#888', font=('Microsoft YaHei UI', 10, 'bold'), padx=5, pady=5)
         log_frame.pack(fill='both', expand=True, padx=10, pady=10)
         
-        self.log_text = scrolledtext.ScrolledText(log_frame, bg='#0f3460', fg='#00ff88',
-                                                 font=('Consolas', 9), relief='flat', height=16, wrap='word')
+        self. log_text = scrolledtext.ScrolledText(log_frame, bg='#0f3460', fg='#00ff88',
+                                                 font=('Consolas', 9), relief='flat', height=14, wrap='word')
         self.log_text.pack(fill='both', expand=True)
         
         # 下注设置
@@ -977,7 +904,7 @@ class BettingBotGUI:
                                             font=('Microsoft YaHei UI', 11, 'bold'), command=self.toggle_auto_bet)
         self.auto_bet_check.grid(row=3, column=0, columnspan=3, pady=(10, 0), sticky='w')
         
-        # 控制按��
+        # 控制按钮
         self.control_frame = tk.Frame(left_frame, bg='#16213e')
         
         self.start_btn = tk.Button(self.control_frame, text="🚀 开始监控", bg='#0088ff',
@@ -1017,7 +944,7 @@ class BettingBotGUI:
         
         # 提示
         self.hint_label = tk.Label(self.right_frame,
-                                  text="请先登录\n\n登录后将显示所有滚球比赛的水位数据\n\n点击「深度诊断」可分析页面结构",
+                                  text="请先登录\n\n登录后将显示所有滚球比赛的水位数据\n\n使用绝对坐标和表格行识别",
                                   bg='#16213e', fg='#888', font=('Microsoft YaHei UI', 12), justify='center')
         self.hint_label.pack(pady=100)
         
@@ -1028,7 +955,7 @@ class BettingBotGUI:
         status_frame = tk.Frame(self.root, bg='#0f3460', height=30)
         status_frame.pack(side='bottom', fill='x')
         
-        self.status_label = tk.Label(status_frame, text="状态: 未登录", bg='#0f3460',
+        self.status_label = tk.Label(status_frame, text="状态:  未登录", bg='#0f3460',
                                     fg='#888', font=('Microsoft YaHei UI', 10), anchor='w', padx=20)
         self.status_label.pack(side='left', fill='y')
         
@@ -1080,8 +1007,8 @@ class BettingBotGUI:
                 self.update_label.config(text=f"🔄 {timestamp}", fg='#00ff88')
                 
                 # 清除旧内容
-                for widget in self. odds_inner_frame.winfo_children():
-                    widget. destroy()
+                for widget in self.odds_inner_frame.winfo_children():
+                    widget.destroy()
                 
                 if not matches:
                     tk.Label(self.odds_inner_frame, text="暂无比赛数据，请点击「深度诊断」查看详情",
@@ -1093,7 +1020,7 @@ class BettingBotGUI:
                 away_total = sum(len(od.get('away', [])) for m in matches for od in m.get('odds', {}).values())
                 
                 tk.Label(self.odds_inner_frame,
-                        text=f"共 {len(matches)} 场比赛，{total_odds} 个水位 (主队:{home_total} 客队:{away_total})  |  阈值:  {self.bot. odds_threshold}",
+                        text=f"共 {len(matches)} 场比赛，{total_odds} 个水位 (主队:{home_total} 客队:{away_total})  |  阈值: {self.bot. odds_threshold}",
                         bg='#0f3460', fg='#00ff88', font=('Microsoft YaHei UI', 11, 'bold')).pack(anchor='w', padx=10, pady=5)
                 
                 current_league = ''
@@ -1162,7 +1089,7 @@ class BettingBotGUI:
                             val = home_odds[0]['value']
                             text = home_odds[0]['text']
                             color = '#ff4444' if val >= threshold else '#00ff88'
-                            tk.Label(cell_inner, text=text, bg='#1e1e32', fg=color,
+                            tk. Label(cell_inner, text=text, bg='#1e1e32', fg=color,
                                     font=('Consolas', 10, 'bold')).pack()
                         else:
                             tk.Label(cell_inner, text="-", bg='#1e1e32', fg='#444',
@@ -1204,8 +1131,8 @@ class BettingBotGUI:
                 self.odds_inner_frame.update_idletasks()
                 self. odds_canvas.configure(scrollregion=self.odds_canvas.bbox('all'))
                 
-            except Exception as e: 
-                print(f"更新显示出错: {e}")
+            except Exception as e:
+                print(f"更新显示出错:  {e}")
                 import traceback
                 traceback.print_exc()
         
@@ -1292,7 +1219,7 @@ class BettingBotGUI:
             messagebox.showwarning("警告", "刷新间隔不能小于1秒")
             return
         
-        self. bot.bet_amount = amount
+        self.bot.bet_amount = amount
         self. bot.odds_threshold = threshold
         self.bot.auto_bet_enabled = self.auto_bet_var.get()
         self.bot.is_running = True
@@ -1300,7 +1227,7 @@ class BettingBotGUI:
         
         self.start_btn.config(state='disabled')
         self.stop_btn.config(state='normal')
-        self.status_label.config(text="状态:  监控中.. .", fg='#00ff88')
+        self.status_label.config(text="状态: 监控中...", fg='#00ff88')
         
         self.log(f"🚀 开始监控 | 间隔:{interval}秒 | 阈值:{threshold} | 金额:{amount}")
         
@@ -1344,7 +1271,9 @@ class BettingBotGUI:
                     self.log(f"✓ 获取 {len(matches)} 场比赛, {total_odds} 水位 (主:{home_count} 客:{away_count})")
                     
                     for match in matches[: 3]: 
-                        self.log(f"  {match. get('score1', '0')} {match.get('team1', '? ')} vs {match.get('team2', '?')} {match.get('score2', '0')}")
+                        t1, t2 = match.get('team1', '? '), match.get('team2', '?')
+                        s1, s2 = match. get('score1', '0'), match.get('score2', '0')
+                        self.log(f"  {s1} {t1} vs {t2} {s2}")
                 else:
                     self.log("❌ 未获取到数据")
             except Exception as e:
@@ -1352,7 +1281,7 @@ class BettingBotGUI:
                 import traceback
                 self.log(traceback.format_exc())
         
-        threading. Thread(target=refresh_thread, daemon=True).start()
+        threading.Thread(target=refresh_thread, daemon=True).start()
     
     def diagnose_page(self):
         """深度诊断"""
@@ -1362,7 +1291,7 @@ class BettingBotGUI:
         
         def diagnose_thread():
             self.log("\n" + "="*50)
-            self.log("🔬 开始深度诊断...")
+            self.log("🔬 开始深度诊断（绝对坐标）...")
             self.log("="*50)
             
             try:
@@ -1370,31 +1299,39 @@ class BettingBotGUI:
                 
                 raw_data = self.bot.get_raw_page_data()
                 elements = raw_data.get('elements', [])
-                self.log(f"\n📊 获取到 {len(elements)} 个元素")
+                scroll_y = raw_data.get('scrollY', 0)
                 
-                # 分析盘口标题
+                self.log(f"\n📊 获取到 {len(elements)} 个元素")
+                self.log(f"   scrollY = {scroll_y}")
+                
+                # 分析盘口标题X坐标
                 self.log("\n📍 盘口标题X坐标:")
-                bet_keywords = ['让球', '大/小', '独赢', '下个进球', '双方球队进球', '单/双']
+                bet_keywords = ['让球', '大/小', '独赢', '下个进球', '双方球队进球']
                 bet_coords = {}
                 for elem in elements:
                     for kw in bet_keywords:
                         if kw in elem['text'] and len(elem['text']) < 20:
                             if kw not in bet_coords: 
                                 bet_coords[kw] = []
-                            bet_coords[kw].append(elem['x'])
+                            bet_coords[kw]. append(elem. get('absolute_x', elem['x']))
                 
                 for kw in bet_keywords:
                     if kw in bet_coords: 
                         coords = bet_coords[kw]
-                        self.log(f"  {kw}: X={int(sum(coords)/len(coords))} (范围:{min(coords)}-{max(coords)})")
+                        self. log(f"  {kw}: X={int(sum(coords)/len(coords))} (范围:{min(coords)}-{max(coords)})")
+                
+                # 分析时间标记
+                self.log("\n⏱ 时间标记位置:")
+                time_pattern = re.compile(r'(上半场|下半场|半场)\s*\d+:\d+')
+                time_elems = [e for e in elements if time_pattern.search(e['text'])]
+                for i, t in enumerate(time_elems[: 10]):
+                    self.log(f"  [{i+1}] X={t. get('absolute_x', t['x']):4d} Y={t.get('absolute_y', t['y']):4d}:  {t['text']}")
                 
                 # 分析球队名
                 self.log("\n🏃 可能的球队名:")
-                teams = [e for e in elements if e['x'] < 280 and 2 <= len(e['text']) <= 35
-                        and not re.match(r'^[\d:. +-/]+$', e['text'])
-                        and not any(kw in e['text'] for kw in ['让球', '大小', '独赢', '进球', '半场'])]
-                for i, t in enumerate(teams[: 15]):
-                    self.log(f"  [{i+1}] X={t['x']: 4d} Y={t['y']:4d}:  {t['text']}")
+                teams = self.bot.extract_team_names(elements[: 200])
+                for i, t in enumerate(teams[:10]):
+                    self.log(f"  [{i+1}] X={t.get('absolute_x', t['x']):4d} Y={t.get('absolute_y', t['y']):4d}: {t['text']}")
                 
                 # 分析水位
                 self.log("\n💰 水位X坐标分布:")
@@ -1403,34 +1340,47 @@ class BettingBotGUI:
                 
                 x_dist = {}
                 for e in odds_elems:
-                    x_range = (e['x'] // 80) * 80
+                    x = e.get('absolute_x', e['x'])
+                    x_range = (x // 80) * 80
                     x_dist[x_range] = x_dist.get(x_range, 0) + 1
                 
                 for x_range in sorted(x_dist.keys()):
                     self.log(f"  X={x_range: 4d}-{x_range+79}:  {x_dist[x_range]: 3d}个")
                 
                 # 运行分析
-                analyzed = self.bot.analyze_raw_data(raw_data)
-                matches = analyzed.get('matches', [])
+                self.log("\n📊 基于表格行识别比赛...")
+                matches, total_odds = self.bot. extract_matches_by_rows(elements)
                 
-                self.log(f"\n✅ 分析结果: {len(matches)} 场比赛")
-                for i, m in enumerate(matches[: 5]):
+                self.log(f"\n✅ 分析结果: {len(matches)} 场比赛, {total_odds} 水位")
+                
+                for i, m in enumerate(matches[:5]):
                     home_c = sum(len(od.get('home', [])) for od in m.get('odds', {}).values())
                     away_c = sum(len(od.get('away', [])) for od in m.get('odds', {}).values())
-                    self.log(f"  [{i+1}] {m.get('team1', '?')} vs {m.get('team2', '?')} | 主:{home_c} 客:{away_c}")
+                    self.log(f"\n  [{i+1}] {m. get('league', '未知')}")
+                    self.log(f"      {m.get('score1', '0')} {m.get('team1', '? ')} vs {m.get('team2', '?')} {m.get('score2', '0')}")
+                    self.log(f"      时间: {m.get('time', '')} | 主队Y:{m.get('team1_y', 0)} 客队Y:{m.get('team2_y', 0)}")
+                    self.log(f"      主队水位: {home_c}个, 客队水位: {away_c}个")
+                    
+                    # 显示部分盘口
+                    for bt in ['让球', '大/小', '独赢']: 
+                        od = m.get('odds', {}).get(bt, {})
+                        home = [o['text'] for o in od.get('home', [])]
+                        away = [o['text'] for o in od.get('away', [])]
+                        if home or away:
+                            self.log(f"      {bt}:  主[{','.join(home)}] 客[{','.join(away)}]")
                 
-                self.update_odds_display(analyzed)
+                self.update_odds_display({'matches': matches, 'totalOdds': total_odds})
                 
                 self.log("\n" + "="*50)
                 self.log("✅ 诊断完成!")
                 self.log("="*50)
                 
-            except Exception as e: 
+            except Exception as e:
                 self.log(f"\n❌ 诊断出错: {e}")
                 import traceback
                 self.log(traceback.format_exc())
         
-        threading.Thread(target=diagnose_thread, daemon=True).start()
+        threading. Thread(target=diagnose_thread, daemon=True).start()
     
     def on_closing(self):
         """关闭窗口"""
