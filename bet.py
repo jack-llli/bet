@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-滚球水位实时监控系统 v5.1
-- 修复时间识别（更灵活的正则）
-- 修复联赛识别（增加更多关键词）
-- 修复独赢盘处理（主/和/客三个水位）
-- 优化球队名提取（X坐标40-200，Y间隔>20px）
+滚球水位实时监控系统 v5.2
+- 支持Esports队名识别
+- 扩大球队名X坐标范围（40-250）
+- 区分盘口值和水位
+- Y间隔改为25px
 """
 
 from selenium import webdriver
@@ -31,7 +31,7 @@ PASSWORD = "zz66688899"
 COOKIES_FILE = "mos055_cookies.pkl"
 CONFIG_FILE = "bet_config.json"
 
-# ================== 盘口布局配置（基于实际X坐标） ==================
+# ================== 盘口布局配置 ==================
 LAYOUT_CONFIG = {
     '让球': (420, 520),
     '大/小': (520, 620),
@@ -49,7 +49,7 @@ BET_TYPES_ORDER = ['让球', '大/小', '独赢', '让球上半场', '大/小上
 EXCLUDE_KEYWORDS = ['让球', '大小', '大/小', '独赢', '进球', '单双', '单/双', '半场',
                    '上半场', '下半场', '主', '客', '和', '大', '小', '是', '否', '无',
                    '队伍', '双方', '角球', '罚牌', '波胆', '主要玩法', '让球&大小',
-                   '滚球', '今日', '早盘', '联赛', '杯', '冠军']
+                   '滚球', '今日', '早盘', '联赛', '杯', '冠军', '即将开赛']
 
 
 class BettingBot:
@@ -100,14 +100,14 @@ class BettingBot:
                 result = self.driver.execute_script("""
                     var elements = document.querySelectorAll('div, button, span');
                     for (var elem of elements) {
-                        if (elem.innerText.trim() === '否' && elem.offsetWidth > 0 && elem.offsetHeight > 0) {
+                        if (elem.innerText. trim() === '否' && elem.offsetWidth > 0 && elem.offsetHeight > 0) {
                             elem.click();
                             return {success: true};
                         }
                     }
                     return {success: false};
                 """)
-                if result. get('success'):
+                if result.get('success'):
                     log_callback(f"  ✓ 第{attempt+1}次关闭弹窗成功")
                     time.sleep(1)
                 else:
@@ -160,7 +160,7 @@ class BettingBot:
                     if(type === 'text' && (id. includes('usr') || id.includes('user') || 
                        placeholder.includes('用户') || placeholder.includes('帐号'))){{
                         input.value = '{username}';
-                        input. dispatchEvent(new Event('input', {{bubbles: true}}));
+                        input.dispatchEvent(new Event('input', {{bubbles: true}}));
                         return {{success: true, id: id}};
                     }}
                 }}
@@ -222,7 +222,7 @@ class BettingBot:
                 
                 var submits = document.querySelectorAll('button[type="submit"], input[type="submit"]');
                 for(var i=0; i<submits.length; i++){
-                    if(submits[i].offsetWidth > 0) { submits[i].click(); return {success: true, method:  'submit'}; }
+                    if(submits[i].offsetWidth > 0) { submits[i].click(); return {success: true, method: 'submit'}; }
                 }
                 
                 return {success: false};
@@ -232,7 +232,7 @@ class BettingBot:
                 log_callback(f"✓ 已点击登录按钮 (方法: {login_result.get('method')})")
             else:
                 log_callback("  尝试使用回车键...")
-                self.driver. execute_script("""
+                self.driver.execute_script("""
                     var pwdInputs = document.querySelectorAll('input[type="password"]');
                     if(pwdInputs.length > 0){
                         var event = new KeyboardEvent('keypress', {key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true});
@@ -327,9 +327,9 @@ class BettingBot:
                                 x: Math.round(rect.x),
                                 y: Math.round(rect.y),
                                 absolute_x: Math.round(absoluteX),
-                                absolute_y:  Math.round(absoluteY),
+                                absolute_y: Math.round(absoluteY),
                                 width: Math.round(rect.width),
-                                height: Math.round(rect. height),
+                                height: Math.round(rect.height),
                                 tag: elem.tagName
                             });
                         } catch(e) {}
@@ -346,7 +346,7 @@ class BettingBot:
                     });
                     
                     uniqueElements.sort(function(a, b) {
-                        if (Math.abs(a.absolute_y - b.absolute_y) < 10) return a.absolute_x - b.absolute_x;
+                        if (Math.abs(a.absolute_y - b.absolute_y) < 10) return a.absolute_x - b. absolute_x;
                         return a.absolute_y - b.absolute_y;
                     });
                     
@@ -366,55 +366,81 @@ class BettingBot:
         except Exception as e:
             return {'elements': [], 'total': 0, 'error': str(e)}
 
+    def is_valid_team_name(self, text):
+        """判断是否是有效的球队名"""
+        # 排除关键词
+        for kw in EXCLUDE_KEYWORDS: 
+            if kw in text: 
+                return False
+        
+        # 排除纯数字、时间、比分
+        if re.match(r'^[\d: .\-+/\s]+$', text):
+            return False
+        
+        # 排除以数字开头（如"1进球"）但允许数字在中间
+        if re.match(r'^\d+[^a-zA-Z\u4e00-\u9fff]', text):
+            return False
+        
+        # Esports队名特殊处理
+        if 'Esports' in text or 'esports' in text.lower():
+            # 如果有括号，说明是队名（如"Olympiacos CFP (Kevin) Esports"）
+            if '(' in text:
+                return True
+            # 单独的"Esports"或"电竞足球-GT体育联赛"等标题要排除
+            if len(text) < 10:
+                return False
+            return True
+        
+        # 必须包含中文或英文字母
+        has_chinese = any('\u4e00' <= c <= '\u9fff' for c in text)
+        has_english = any(c. isalpha() for c in text)
+        if not has_chinese and not has_english:
+            return False
+        
+        return True
+
     def extract_team_names(self, match_elements):
-        """提取球队名（排除干扰项）- 优化版"""
+        """提取球队名（支持Esports）- 优化版"""
         candidates = []
         
         for elem in match_elements:
             text = elem['text']. strip()
             x = elem. get('absolute_x', elem.get('x', 0))
             
-            # X坐标范围：40-200（排除左侧边栏和中间区域）
-            if not (40 < x < 200):
+            # X坐标范围：40-250（扩大范围）
+            if not (40 < x < 250):
                 continue
             
             # 长度过滤
-            if len(text) < 2 or len(text) > 30:
+            if len(text) < 2 or len(text) > 40:
                 continue
             
-            # 排除关键词
-            if any(kw in text for kw in EXCLUDE_KEYWORDS):
-                continue
-            
-            # 排除纯数字、时间、比分
-            if re.match(r'^[\d: .\-+/\s]+$', text):
-                continue
-            
-            # 排除以数字开头（如"1进球"）
-            if re.match(r'^\d', text):
-                continue
-            
-            # 必须包含中文或英文字母
-            has_chinese = any('\u4e00' <= c <= '\u9fff' for c in text)
-            has_english = any(c.isalpha() for c in text)
-            if not has_chinese and not has_english:
+            # 使用统一的验证函数
+            if not self.is_valid_team_name(text):
                 continue
             
             candidates.append(elem)
         
         # 按Y坐标排序
-        candidates.sort(key=lambda x: x.get('absolute_y', x.get('y', 0)))
+        candidates.sort(key=lambda x: x. get('absolute_y', x.get('y', 0)))
         
-        # 确保两个球队名不同且Y间隔>20px
+        # 确保两个球队名不同且Y间隔>25px
         if len(candidates) >= 1:
             team1 = candidates[0]
+            team1_y = team1.get('absolute_y', team1.get('y', 0))
+            
             for c in candidates[1:]:
-                y_diff = abs(c.get('absolute_y', c.get('y', 0)) - team1.get('absolute_y', team1.get('y', 0)))
-                if c['text'] != team1['text'] and y_diff > 20:
+                c_y = c.get('absolute_y', c.get('y', 0))
+                y_diff = abs(c_y - team1_y)
+                # Y间隔>25px且名字不同
+                if c['text'] != team1['text'] and y_diff > 25:
                     return [team1, c]
-            # 如果没找到不同的，返回前两个
-            if len(candidates) >= 2:
-                return candidates[:2]
+            
+            # 如果没找到满足条件的，返回前两个不同名字的
+            for c in candidates[1:]:
+                if c['text'] != team1['text']:
+                    return [team1, c]
+            
             return [team1]
         
         return candidates[: 2]
@@ -430,17 +456,20 @@ class BettingBot:
 
     def extract_matches_by_rows(self, elements):
         """基于表格行结构识别比赛 - 优化版"""
-        # 正则表达式 - 更灵活
+        # 正则表达式
+        # 水位格式：1-2位数字. 1-2位数字（如"1.85", "12.50"）
         odds_pattern = re.compile(r'^\d{1,2}\.\d{1,2}$')
-        # 修改后的时间正则（更灵活）
+        # 盘口值格式：可能带+-号的数字（如"+0.5", "-1", "3.5"）
+        handicap_pattern = re.compile(r'^[+-]?\d+\. ?\d*$')
+        # 时间正则（更灵活）
         time_pattern = re.compile(r'(上半场|下半场|半场)?\s?\d+:\d+')
         score_pattern = re.compile(r'^\d{1,2}$')
-        # 修改后的联赛正则（增加更多关键词）
-        league_pattern = re.compile(r'(联赛|杯|甲组|乙组|超级|Esports|FIFA|女|澳大利亚|墨西哥|中国|英格兰|西班牙|意大利|德国|法国|荷兰|葡萄牙|日本|韩国|印尼|友谊赛)', re.IGNORECASE)
+        # 联赛正则
+        league_pattern = re.compile(r'(联赛|杯|甲组|乙组|超级|Esports|FIFA|女|澳大利亚|墨西哥|中国|英格兰|西班牙|意大利|德国|法国|荷兰|葡萄牙|日本|韩国|印尼|友谊赛|体育)', re.IGNORECASE)
         
         # 1. 按Y坐标分组（约30px为一行）
         rows = {}
-        for elem in elements: 
+        for elem in elements:
             row_key = round(elem.get('absolute_y', elem.get('y', 0)) / 30) * 30
             if row_key not in rows:
                 rows[row_key] = []
@@ -451,7 +480,6 @@ class BettingBot:
         for y, row_elems in sorted(rows.items()):
             for e in row_elems:
                 x = e.get('absolute_x', e.get('x', 0))
-                # 时间元素通常在左侧（X < 300）
                 if time_pattern.search(e['text']) and x < 300:
                     match_start_rows.append(y)
                     break
@@ -462,7 +490,6 @@ class BettingBot:
             text = elem['text']
             x = elem.get('absolute_x', elem.get('x', 0))
             y = elem.get('absolute_y', elem.get('y', 0))
-            # 必须在左侧（X < 400）且长度合适
             if league_pattern.search(text) and 5 < len(text) < 50 and x < 400:
                 league_info[y] = text
         
@@ -534,47 +561,61 @@ class BettingBot:
             
             # 按盘口类型分组提取水位
             for bet_type, (x_min, x_max) in LAYOUT_CONFIG.items():
-                # 获取该盘口范围内的元素
                 bet_elements = [e for e in match_elements 
                                if x_min <= e.get('absolute_x', e.get('x', 0)) < x_max]
                 
-                # 提取水位
                 odds_in_type = []
+                handicap_text = ''
+                
                 for elem in bet_elements:
                     text = elem['text']
                     y = elem.get('absolute_y', elem.get('y', 0))
                     x = elem.get('absolute_x', elem.get('x', 0))
                     
+                    # 区分盘口值和水位
                     if odds_pattern.match(text):
+                        # 这是水位（如"1.85"）
                         odds_in_type.append({
                             'value': float(text),
                             'text': text,
                             'x': x,
                             'y': y
                         })
-                    elif re.match(r'^[+-]?\d', text) or text. startswith('大') or text.startswith('小'):
-                        match['odds'][bet_type]['handicap'] = text
+                    elif handicap_pattern.match(text):
+                        # 可能是盘口值（如"+0.5", "-1", "3.5"）
+                        try:
+                            val = float(text. replace('+', ''))
+                            # 盘口值一般不超过20
+                            if abs(val) <= 20:
+                                handicap_text = text
+                        except: 
+                            pass
+                    elif text.startswith('大') or text.startswith('小'):
+                        # 大小盘口（如"大2.5", "小3.5"）
+                        handicap_text = text
+                
+                # 设置盘口值
+                if handicap_text:
+                    match['odds'][bet_type]['handicap'] = handicap_text
                 
                 # 按Y坐标排序
                 odds_in_type.sort(key=lambda o: o['y'])
                 
                 # 独赢盘特殊处理：主队/和局/客队（3个水位）
                 if bet_type in ['独赢', '独赢上半场'] and len(odds_in_type) >= 3:
-                    match['odds'][bet_type]['home']. append(odds_in_type[0])  # 第1个 → 主队
-                    match['odds'][bet_type]['draw'].append(odds_in_type[1])  # 第2个 → 和局
-                    match['odds'][bet_type]['away'].append(odds_in_type[2])  # 第3个 → 客队
+                    match['odds'][bet_type]['home']. append(odds_in_type[0])
+                    match['odds'][bet_type]['draw'].append(odds_in_type[1])
+                    match['odds'][bet_type]['away']. append(odds_in_type[2])
                     total_odds_count += 3
                 elif len(odds_in_type) >= 2:
-                    # 其他盘口：按Y坐标判断主客队
                     for odds_obj in odds_in_type: 
                         team_type = self.classify_odds_by_team(odds_obj['y'], team1_y, team2_y)
-                        if team_type == 'home':
+                        if team_type == 'home': 
                             match['odds'][bet_type]['home'].append(odds_obj)
                         else:
                             match['odds'][bet_type]['away'].append(odds_obj)
                         total_odds_count += 1
                 elif len(odds_in_type) == 1:
-                    # 只有一个水位，按Y坐标判断
                     odds_obj = odds_in_type[0]
                     team_type = self.classify_odds_by_team(odds_obj['y'], team1_y, team2_y)
                     match['odds'][bet_type][team_type].append(odds_obj)
@@ -693,8 +734,8 @@ class BettingBot:
 
     def close_bet_panel(self):
         """关闭下注面板"""
-        try: 
-            self.driver.execute_script("""
+        try:
+            self.driver. execute_script("""
                 var closes = document.querySelectorAll('[class*="close"], button');
                 for(var i=0; i<closes.length; i++){
                     var el = closes[i];
@@ -702,7 +743,7 @@ class BettingBot:
                 }
             """)
             time.sleep(0.5)
-        except: 
+        except:
             pass
 
     def auto_bet_check(self, log_callback):
@@ -717,9 +758,8 @@ class BettingBot:
             league = match.get('league', '')
             
             for bet_type, type_odds in match.get('odds', {}).items():
-                # 检查主队、客队、和局
                 for team_type in ['home', 'away', 'draw']:
-                    for odds in type_odds.get(team_type, []):
+                    for odds in type_odds. get(team_type, []):
                         if odds['value'] >= threshold and odds['value'] < 50:
                             bet_key = f"{team1}_{team2}_{bet_type}_{team_type}_{odds['text']}_{datetime.now().strftime('%Y%m%d%H')}"
                             
@@ -732,8 +772,8 @@ class BettingBot:
                             
                             if self.click_odds(odds['text'], odds['x'], odds['y'], log_callback):
                                 time.sleep(1)
-                                if self.place_bet(self.bet_amount, log_callback):
-                                    self.bet_history. append(bet_key)
+                                if self.place_bet(self. bet_amount, log_callback):
+                                    self.bet_history.append(bet_key)
                                     log_callback(f"  ✓✓ 下注成功!")
                                     self.close_bet_panel()
                                     return True
@@ -758,7 +798,7 @@ class BettingBot:
                     
                     log_callback(f"[{datetime.now().strftime('%H:%M:%S')}] {len(matches)}场, {total_odds}水位 (主:{home_count} 客:{away_count} 和:{draw_count})")
                     
-                    if self. auto_bet_enabled: 
+                    if self.auto_bet_enabled:
                         self.auto_bet_check(log_callback)
                 
                 time.sleep(interval)
@@ -783,7 +823,7 @@ class BettingBotGUI:
     
     def __init__(self, root):
         self.root = root
-        self.root.title("滚球水位实时监控系统 v5.1")
+        self.root.title("滚球水位实时监控系统 v5.2")
         self.root.geometry("1850x950")
         self.root.configure(bg='#1a1a2e')
         
@@ -826,9 +866,9 @@ class BettingBotGUI:
         title_frame = tk.Frame(self.root, bg='#1a1a2e')
         title_frame.pack(fill='x', padx=20, pady=10)
         
-        tk.Label(title_frame, text="🎯 滚球水位实时监控系统 v5.1", bg='#1a1a2e', fg='#00ff88',
+        tk.Label(title_frame, text="🎯 滚球水位实时监控系统 v5.2", bg='#1a1a2e', fg='#00ff88',
                 font=('Microsoft YaHei UI', 22, 'bold')).pack()
-        tk.Label(title_frame, text="优化时间/联赛识别 | 独赢盘主/和/客 | 精确球队提取 | 自动下注",
+        tk.Label(title_frame, text="支持Esports队名 | 区分盘口值/水位 | 独赢盘主/和/客 | 自动下注",
                 bg='#1a1a2e', fg='#888', font=('Microsoft YaHei UI', 10)).pack()
         
         # 主容器
@@ -873,7 +913,7 @@ class BettingBotGUI:
                                                  font=('Consolas', 9), relief='flat', height=14, wrap='word')
         self.log_text.pack(fill='both', expand=True)
         
-        # 下注��置
+        # 下注设置
         self.bet_frame = tk.LabelFrame(left_frame, text="💰 下注设置", bg='#16213e',
                                       fg='#ff9900', font=('Microsoft YaHei UI', 11, 'bold'), padx=10, pady=10)
         
@@ -951,7 +991,7 @@ class BettingBotGUI:
         
         # 提示
         self.hint_label = tk.Label(self.right_frame,
-                                  text="请先登录\n\n登录后将显示所有滚球比赛的水位数据\n\n独赢盘支持主队/和局/客队",
+                                  text="请先登录\n\n登录后将显示所有滚球比赛的水位数据\n\n支持Esports队名和独赢盘主/和/客",
                                   bg='#16213e', fg='#888', font=('Microsoft YaHei UI', 12), justify='center')
         self.hint_label.pack(pady=100)
         
@@ -972,8 +1012,8 @@ class BettingBotGUI:
     
     def create_odds_display_area(self, parent):
         """创建水位显示区域"""
-        if self.hint_label:
-            self.hint_label.pack_forget()
+        if self.hint_label: 
+            self.hint_label. pack_forget()
         
         if self.odds_canvas:
             self.odds_canvas. master.destroy()
@@ -1000,10 +1040,10 @@ class BettingBotGUI:
         self.odds_canvas.bind_all('<MouseWheel>', lambda e: self.odds_canvas.yview_scroll(int(-1*(e.delta/120)), 'units'))
     
     def update_odds_display(self, data):
-        """更新水位显示 - 支持独赢盘和局"""
+        """更新水位显示"""
         def update():
             try:
-                if not self.odds_inner_frame: 
+                if not self.odds_inner_frame:
                     self.create_odds_display_area(self.right_frame)
                 
                 matches = data.get('matches', [])
@@ -1047,7 +1087,7 @@ class BettingBotGUI:
                     # 联赛标题
                     if league and league != current_league:
                         league_frame = tk.Frame(self.odds_inner_frame, bg='#2d2d44')
-                        league_frame.pack(fill='x', pady=(15, 5), padx=5)
+                        league_frame. pack(fill='x', pady=(15, 5), padx=5)
                         tk.Label(league_frame, text=f"🏆 {league}", bg='#2d2d44', fg='#ffaa00',
                                 font=('Microsoft YaHei UI', 12, 'bold'), pady=5).pack(anchor='w', padx=10)
                         current_league = league
@@ -1064,7 +1104,9 @@ class BettingBotGUI:
                             font=('Microsoft YaHei UI', 9), width=18, anchor='w').pack(side='left')
                     
                     for bt in display_bet_types: 
-                        tk.Label(info_frame, text=bt, bg='#1e1e32', fg='#aaa',
+                        handicap = odds.get(bt, {}).get('handicap', '')
+                        header_text = f"{bt}\n{handicap}" if handicap else bt
+                        tk.Label(info_frame, text=header_text, bg='#1e1e32', fg='#aaa',
                                 font=('Microsoft YaHei UI', 8), width=10, anchor='center').pack(side='left', padx=1)
                     
                     # 主队行
@@ -1074,8 +1116,11 @@ class BettingBotGUI:
                     score_color = '#ff4444' if score1 and score1. isdigit() and int(score1) > 0 else '#fff'
                     tk.Label(team1_frame, text=score1 or '0', bg='#1e1e32', fg=score_color,
                             font=('Microsoft YaHei UI', 11, 'bold'), width=3).pack(side='left')
-                    tk.Label(team1_frame, text=team1[: 14], bg='#1e1e32', fg='#fff',
-                            font=('Microsoft YaHei UI', 10), width=14, anchor='w').pack(side='left')
+                    
+                    # 球队名截断显示
+                    team1_display = team1[: 16] + '. .' if len(team1) > 18 else team1
+                    tk.Label(team1_frame, text=team1_display, bg='#1e1e32', fg='#fff',
+                            font=('Microsoft YaHei UI', 9), width=16, anchor='w').pack(side='left')
                     
                     for bt in display_bet_types: 
                         cell_frame = tk.Frame(team1_frame, bg='#1e1e32', width=80)
@@ -1084,20 +1129,15 @@ class BettingBotGUI:
                         
                         type_odds = odds.get(bt, {})
                         home_odds = type_odds.get('home', [])
-                        handicap = type_odds.get('handicap', '')
                         
                         cell_inner = tk.Frame(cell_frame, bg='#1e1e32')
                         cell_inner.pack(expand=True)
-                        
-                        if handicap:
-                            tk.Label(cell_inner, text=handicap, bg='#1e1e32', fg='#666',
-                                    font=('Consolas', 7)).pack()
                         
                         if home_odds:
                             val = home_odds[0]['value']
                             text = home_odds[0]['text']
                             color = '#ff4444' if val >= threshold else '#00ff88'
-                            tk.Label(cell_inner, text=text, bg='#1e1e32', fg=color,
+                            tk. Label(cell_inner, text=text, bg='#1e1e32', fg=color,
                                     font=('Consolas', 10, 'bold')).pack()
                         else:
                             tk.Label(cell_inner, text="-", bg='#1e1e32', fg='#444',
@@ -1105,13 +1145,13 @@ class BettingBotGUI:
                     
                     # 和局行（仅独赢盘）
                     has_draw = any(odds.get(bt, {}).get('draw', []) for bt in ['独赢', '独赢上半场'])
-                    if has_draw:
+                    if has_draw: 
                         draw_frame = tk.Frame(match_frame, bg='#1e1e32')
                         draw_frame.pack(fill='x', pady=1, padx=5)
                         
                         tk.Label(draw_frame, text="", bg='#1e1e32', width=3).pack(side='left')
                         tk.Label(draw_frame, text="和局", bg='#1e1e32', fg='#aaa',
-                                font=('Microsoft YaHei UI', 9), width=14, anchor='w').pack(side='left')
+                                font=('Microsoft YaHei UI', 9), width=16, anchor='w').pack(side='left')
                         
                         for bt in display_bet_types:
                             cell_frame = tk.Frame(draw_frame, bg='#1e1e32', width=80)
@@ -1124,13 +1164,13 @@ class BettingBotGUI:
                             cell_inner = tk.Frame(cell_frame, bg='#1e1e32')
                             cell_inner.pack(expand=True)
                             
-                            if draw_odds:
+                            if draw_odds: 
                                 val = draw_odds[0]['value']
                                 text = draw_odds[0]['text']
                                 color = '#ff4444' if val >= threshold else '#00ccff'
                                 tk.Label(cell_inner, text=text, bg='#1e1e32', fg=color,
                                         font=('Consolas', 10, 'bold')).pack()
-                            else: 
+                            else:
                                 tk.Label(cell_inner, text="", bg='#1e1e32',
                                         font=('Consolas', 10)).pack()
                     
@@ -1141,23 +1181,23 @@ class BettingBotGUI:
                     score_color = '#ff4444' if score2 and score2.isdigit() and int(score2) > 0 else '#fff'
                     tk.Label(team2_frame, text=score2 or '0', bg='#1e1e32', fg=score_color,
                             font=('Microsoft YaHei UI', 11, 'bold'), width=3).pack(side='left')
-                    tk.Label(team2_frame, text=team2[:14], bg='#1e1e32', fg='#fff',
-                            font=('Microsoft YaHei UI', 10), width=14, anchor='w').pack(side='left')
+                    
+                    team2_display = team2[:16] + '..' if len(team2) > 18 else team2
+                    tk.Label(team2_frame, text=team2_display, bg='#1e1e32', fg='#fff',
+                            font=('Microsoft YaHei UI', 9), width=16, anchor='w').pack(side='left')
                     
                     for bt in display_bet_types: 
-                        cell_frame = tk.Frame(team2_frame, bg='#1e1e32', width=80)
-                        cell_frame. pack(side='left', padx=1)
+                        cell_frame = tk. Frame(team2_frame, bg='#1e1e32', width=80)
+                        cell_frame.pack(side='left', padx=1)
                         cell_frame.pack_propagate(False)
                         
-                        type_odds = odds.get(bt, {})
+                        type_odds = odds. get(bt, {})
                         away_odds = type_odds.get('away', [])
                         
-                        cell_inner = tk. Frame(cell_frame, bg='#1e1e32')
+                        cell_inner = tk.Frame(cell_frame, bg='#1e1e32')
                         cell_inner.pack(expand=True)
                         
-                        tk.Label(cell_inner, text="", bg='#1e1e32', font=('Consolas', 7)).pack()
-                        
-                        if away_odds:
+                        if away_odds: 
                             val = away_odds[0]['value']
                             text = away_odds[0]['text']
                             color = '#ff4444' if val >= threshold else '#ffaa00'
@@ -1194,7 +1234,7 @@ class BettingBotGUI:
             result = messagebox.askyesno("确认启用自动下注",
                 f"确定启用自动下注吗？\n\n水位 ≥ {self.threshold_entry.get()} 时将自动下注\n下注金额:  {self.amount_entry.get()} RMB\n\n请确保账户余额充足！")
             if result:
-                self.bot.auto_bet_enabled = True
+                self. bot.auto_bet_enabled = True
                 self.bot.odds_threshold = float(self.threshold_entry.get())
                 self.bot.bet_amount = float(self.amount_entry.get())
                 self.save_config()
@@ -1202,7 +1242,7 @@ class BettingBotGUI:
             else:
                 self.auto_bet_var.set(False)
         else:
-            self.bot.auto_bet_enabled = False
+            self.bot. auto_bet_enabled = False
             self.log("自动下注已关闭")
     
     def login(self):
@@ -1215,7 +1255,7 @@ class BettingBotGUI:
             return
         
         self.login_btn.config(state='disabled', text="登录中...")
-        self.status_label.config(text="状态:  登录中.. .", fg='#ffaa00')
+        self.status_label.config(text="状态: 登录中.. .", fg='#ffaa00')
         
         def login_thread():
             try:
@@ -1255,7 +1295,7 @@ class BettingBotGUI:
             return
         
         if interval < 1:
-            messagebox.showwarning("警告", "刷新间隔不能小于1秒")
+            messagebox.showwarning("警告", "刷新间隔不能小���1秒")
             return
         
         self. bot.bet_amount = amount
@@ -1266,7 +1306,7 @@ class BettingBotGUI:
         
         self.start_btn.config(state='disabled')
         self.stop_btn.config(state='normal')
-        self.status_label.config(text="状态: 监控中...", fg='#00ff88')
+        self.status_label.config(text="状态:  监控中...", fg='#00ff88')
         
         self.log(f"🚀 开始监控 | 间隔:{interval}秒 | 阈值:{threshold} | 金额:{amount}")
         
@@ -1313,7 +1353,7 @@ class BettingBotGUI:
                     for match in matches[: 3]: 
                         t1, t2 = match.get('team1', '? '), match.get('team2', '?')
                         s1, s2 = match. get('score1', '0'), match.get('score2', '0')
-                        self.log(f"  {s1} {t1} vs {t2} {s2}")
+                        self.log(f"  {s1} {t1[: 20]} vs {t2[:20]} {s2}")
                 else:
                     self.log("❌ 未获取到数据")
             except Exception as e:
@@ -1321,7 +1361,7 @@ class BettingBotGUI:
                 import traceback
                 self.log(traceback.format_exc())
         
-        threading. Thread(target=refresh_thread, daemon=True).start()
+        threading.Thread(target=refresh_thread, daemon=True).start()
     
     def diagnose_page(self):
         """深度诊断"""
@@ -1331,7 +1371,7 @@ class BettingBotGUI:
         
         def diagnose_thread():
             self.log("\n" + "="*50)
-            self.log("🔬 开始深度诊断 v5.1...")
+            self.log("🔬 开始深度诊断 v5.2...")
             self.log("="*50)
             
             try:
@@ -1366,32 +1406,33 @@ class BettingBotGUI:
                 for i, t in enumerate(time_elems[: 8]):
                     self.log(f"  [{i+1}] X={t. get('absolute_x', t['x']):4d} Y={t.get('absolute_y', t['y']):4d}:  {t['text']}")
                 
-                # 分析联赛
-                self.log("\n🏆 联赛标题:")
-                league_pattern = re.compile(r'(联赛|杯|甲组|乙组|超级|Esports|FIFA|女|澳大利亚|墨西哥)', re.IGNORECASE)
-                league_elems = [e for e in elements if league_pattern.search(e['text']) and 5 < len(e['text']) < 50 and e.get('absolute_x', e['x']) < 400]
-                for i, l in enumerate(league_elems[: 8]):
-                    self.log(f"  [{i+1}] X={l.get('absolute_x', l['x']):4d} Y={l.get('absolute_y', l['y']):4d}: {l['text']}")
-                
-                # 分析球队名
-                self.log("\n🏃 球队名候选:")
+                # 分析球队名（包括Esports）
+                self.log("\n🏃 球队名候选（含Esports）:")
                 teams = self.bot.extract_team_names(elements[: 300])
-                for i, t in enumerate(teams[:10]):
-                    self.log(f"  [{i+1}] X={t.get('absolute_x', t['x']):4d} Y={t.get('absolute_y', t['y']):4d}: {t['text']}")
+                for i, t in enumerate(teams[: 10]):
+                    self.log(f"  [{i+1}] X={t.get('absolute_x', t['x']):4d} Y={t.get('absolute_y', t['y']):4d}: {t['text'][: 35]}")
                 
-                # 分析水位
-                self.log("\n💰 水位X坐标分布:")
+                # 分析水位和盘口值
+                self.log("\n💰 水位/盘口值分析:")
                 odds_pattern = re.compile(r'^\d{1,2}\.\d{1,2}$')
-                odds_elems = [e for e in elements if odds_pattern.match(e['text'])]
+                handicap_pattern = re.compile(r'^[+-]?\d+\. ?\d*$')
                 
+                odds_elems = [e for e in elements if odds_pattern.match(e['text'])]
+                handicap_elems = [e for e in elements if handicap_pattern.match(e['text']) and not odds_pattern.match(e['text'])]
+                
+                self.log(f"  水位数量: {len(odds_elems)}")
+                self.log(f"  盘口值数量: {len(handicap_elems)}")
+                
+                # X坐标分布
                 x_dist = {}
                 for e in odds_elems:
                     x = e.get('absolute_x', e['x'])
                     x_range = (x // 80) * 80
                     x_dist[x_range] = x_dist.get(x_range, 0) + 1
                 
-                for x_range in sorted(x_dist. keys()):
-                    self. log(f"  X={x_range: 4d}-{x_range+79}:  {x_dist[x_range]: 3d}个")
+                self.log("\n  水位X坐标分布:")
+                for x_range in sorted(x_dist.keys()):
+                    self.log(f"    X={x_range: 4d}-{x_range+79}:  {x_dist[x_range]:3d}个")
                 
                 # 运行分析
                 self.log("\n📊 基于表格行识别比赛...")
@@ -1404,19 +1445,20 @@ class BettingBotGUI:
                     away_c = sum(len(od.get('away', [])) for od in m.get('odds', {}).values())
                     draw_c = sum(len(od.get('draw', [])) for od in m.get('odds', {}).values())
                     
-                    self. log(f"\n  [{i+1}] {m. get('league', '未知')}")
-                    self.log(f"      {m.get('score1', '0')} {m.get('team1', '? ')} vs {m.get('team2', '?')} {m.get('score2', '0')}")
-                    self.log(f"      时间: {m.get('time', '')} | Y1:{m.get('team1_y', 0)} Y2:{m.get('team2_y', 0)}")
-                    self.log(f"      主:{home_c} 客:{away_c} 和:{draw_c}")
+                    self. log(f"\n  [{i+1}] {m.get('league', '未知')}")
+                    self.log(f"      {m.get('score1', '0')} {m.get('team1', '? ')[:25]}")
+                    self.log(f"      {m.get('score2', '0')} {m.get('team2', '?')[:25]}")
+                    self.log(f"      时间: {m.get('time', '')} | 主:{home_c} 客:{away_c} 和:{draw_c}")
                     
-                    # 显示独赢盘详情
-                    for bt in ['独赢', '让球', '大/小']: 
+                    # 显示盘口详情
+                    for bt in ['让球', '大/小', '独赢']: 
                         od = m.get('odds', {}).get(bt, {})
+                        handicap = od.get('handicap', '')
                         home = [o['text'] for o in od.get('home', [])]
                         away = [o['text'] for o in od.get('away', [])]
                         draw = [o['text'] for o in od.get('draw', [])]
                         if home or away or draw:
-                            parts = []
+                            parts = [f"盘口:{handicap}"] if handicap else []
                             if home:  parts.append(f"主[{','.join(home)}]")
                             if draw: parts.append(f"和[{','.join(draw)}]")
                             if away:  parts.append(f"客[{','.join(away)}]")
