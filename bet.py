@@ -1,8 +1,17 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+滚球水位实时监控系统 v4.1
+- 修复登录按钮问题
+- 修复球队识别
+- 修复主客队水位归类
+"""
+
 from selenium import webdriver
 from selenium. webdriver.common.by import By
-from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support. ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
-from selenium.common.exceptions import TimeoutException, NoSuchElementException
+from selenium. common.exceptions import TimeoutException, NoSuchElementException
 from selenium.webdriver.common.action_chains import ActionChains
 import time
 import pickle
@@ -12,340 +21,47 @@ import threading
 from datetime import datetime
 import re
 import json
+import os
 
 # ================== 配置 ==================
 URL = "https://mos055.com/"
 USERNAME = "LJJ123123"
 PASSWORD = "zz66688899"
 COOKIES_FILE = "mos055_cookies.pkl"
+CONFIG_FILE = "bet_config.json"
 
-# ================== 统一的布局坐标配置 ==================
+# ================== 盘口布局配置 ==================
 LAYOUT_CONFIG = {
-    "让球": (430, 530),
-    "大/小": (530, 620),
-    "独赢": (620, 750),
-    "下个进球": (750, 870),
-    "双方球队进球": (870, 1000),
-    "单/双": (1000, 1130),
-    "队伍1进球": (1130, 1260),
-    "队伍2进球": (1260, 1400),
-    "让球上半场": (870, 950),
-    "大/小上半场": (950, 1050),
-    "独赢上半场": (1050, 1180),
+    '让球': (420, 520),
+    '大/小': (520, 620),
+    '独赢': (620, 740),
+    '让球上半场': (740, 840),
+    '大/小上半场': (840, 940),
+    '独赢上半场': (940, 1060),
+    '下个进球': (1060, 1160),
+    '双方球队进球': (1160, 1280),
 }
 
-TEAM1_Y_OFFSET = (20, 60)
-TEAM2_Y_OFFSET = (60, 110)
+BET_TYPES_ORDER = ['让球', '大/小', '独赢', '让球上半场', '大/小上半场', '独赢上半场', '下个进球', '双方球队进球']
 
 
-# ================== 详细打印水位数据函数 ==================
-def print_detailed_odds_data(data, print_to_console=True):
-    """
-    详细打印滚球水位数据，便于后续分析
+class BettingBot:
+    """投注机器人核心类"""
     
-    Args:
-        data: 从 get_all_odds_data() 返回的数据
-        print_to_console: 是否打印到控制台
-    
-    Returns:
-        str: 格式化的水位数据字符串
-    """
-    if not data: 
-        return "无数据"
-    
-    output_lines = []
-    separator = "=" * 80
-    sub_separator = "-" * 60
-    
-    output_lines.append(f"\n{separator}")
-    output_lines.append(f"【滚球水位详细数据报告】")
-    output_lines.append(f"时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-    output_lines.append(separator)
-    
-    # 调试信息
-    debug = data.get('debug', {})
-    output_lines.append(f"\n📊 【调试统计信息】")
-    output_lines.append(f"  总扫描元素数: {debug.get('totalScanned', 0)}")
-    output_lines.append(f"  TAHOMA字体元素数: {debug.get('tahoma2Elements', 0)}")
-    output_lines.append(f"  从data属性获取:  {debug.get('fromDataAttr', 0)}")
-    output_lines.append(f"  从伪元素获取: {debug.get('fromPseudo', 0)}")
-    output_lines.append(f"  从文本获取: {debug.get('fromText', 0)}")
-    output_lines.append(f"  私有Unicode: {debug.get('privateUnicode', 0)}")
-    output_lines.append(f"  识别球队名数: {debug.get('teamNamesFound', 0)}")
-    output_lines.append(f"  识别水位数:  {debug.get('oddsFound', 0)}")
-    output_lines.append(f"  检测到比赛数: {debug.get('matchesDetected', 0)}")
-    
-    # 汇总信息
-    matches = data.get('matches', [])
-    total_odds = data.get('totalOdds', 0)
-    raw_elements = data.get('rawElements', 0)
-    
-    output_lines.append(f"\n📈 【汇总信息】")
-    output_lines.append(f"  比赛总数: {len(matches)}")
-    output_lines.append(f"  水位总数: {total_odds}")
-    output_lines.append(f"  原始元素数: {raw_elements}")
-    
-    # 布局配置
-    output_lines.append(f"\n📐 【布局配置】")
-    for bet_type, (x_start, x_end) in LAYOUT_CONFIG.items():
-        output_lines.append(f"  {bet_type}: X坐标范围 [{x_start}, {x_end})")
-    
-    # 各比赛详细数据
-    output_lines.append(f"\n{separator}")
-    output_lines.append(f"【各比赛详细水位数据】")
-    output_lines.append(separator)
-    
-    for idx, match in enumerate(matches, 1):
-        match_id = match.get('id', idx)
-        league = match.get('league', '未知联赛')
-        team1 = match.get('team1', '未知')
-        team2 = match.get('team2', '未知')
-        score1 = match.get('team1Score', '-')
-        score2 = match.get('team2Score', '-')
-        time_str = match.get('time', '')
-        
-        output_lines.append(f"\n{sub_separator}")
-        output_lines.append(f"【比赛 {match_id}】")
-        output_lines.append(f"  联赛: {league}")
-        output_lines.append(f"  主队: {team1} (比分: {score1})")
-        output_lines.append(f"  客队: {team2} (比分: {score2})")
-        output_lines. append(f"  时间:  {time_str}")
-        
-        # 主队水位汇总
-        team1_odds = match.get('team1Odds', [])
-        team2_odds = match.get('team2Odds', [])
-        all_odds = match.get('allOdds', [])
-        
-        output_lines.append(f"\n  📊 水位统计:")
-        output_lines. append(f"    主队水位数: {len(team1_odds)}")
-        output_lines. append(f"    客队水位数: {len(team2_odds)}")
-        output_lines.append(f"    总水位数: {len(all_odds)}")
-        
-        # 按盘口类型分类详细输出
-        odds_data = match.get('oddsData', {})
-        
-        output_lines.append(f"\n  📋 各盘口详细水位:")
-        
-        for bet_type in LAYOUT_CONFIG. keys():
-            if bet_type not in odds_data:
-                continue
-            
-            type_data = odds_data[bet_type]
-            has_data = False
-            
-            # 检查是否有数据
-            for key, values in type_data.items():
-                if values:
-                    has_data = True
-                    break
-            
-            if not has_data:
-                continue
-            
-            output_lines.append(f"\n    【{bet_type}】")
-            
-            for key, values in type_data.items():
-                if values:
-                    output_lines.append(f"      {key}:")
-                    for i, odds_obj in enumerate(values):
-                        value = odds_obj.get('value', 0)
-                        text = odds_obj.get('text', '')
-                        handicap = odds_obj.get('handicap', '')
-                        x = odds_obj.get('x', 0)
-                        y = odds_obj.get('y', 0)
-                        is_team1 = odds_obj.get('isTeam1', False)
-                        
-                        handicap_str = f", 盘口={handicap}" if handicap else ""
-                        team_str = "主队行" if is_team1 else "客队行"
-                        
-                        output_lines.append(f"        [{i+1}] 水位={text} (值={value:. 2f}{handicap_str}) | 坐标=({x}, {y}) | {team_str}")
-        
-        # 输出所有水位的原始列表(便于分析)
-        output_lines. append(f"\n  📝 所有水位原始数据:")
-        if all_odds:
-            for i, odds in enumerate(all_odds):
-                bet_type = odds.get('betType', '未知')
-                value = odds.get('value', 0)
-                text = odds. get('text', '')
-                handicap = odds.get('handicap', '')
-                x = odds. get('x', 0)
-                y = odds.get('y', 0)
-                is_team1 = odds.get('isTeam1', False)
-                
-                team_str = "主" if is_team1 else "客"
-                handicap_str = f"[{handicap}]" if handicap else ""
-                
-                output_lines.append(f"    {i+1:3d}. {bet_type:12s} | {team_str} | 水位={text: 6s} | 值={value: 5.2f} | 盘口{handicap_str: 8s} | XY=({x: 4d},{y:4d})")
-        else:
-            output_lines.append(f"    (无水位数据)")
-    
-    # 高水位汇总
-    output_lines.append(f"\n{separator}")
-    output_lines.append(f"【高水位汇总 (>=1.80)】")
-    output_lines.append(separator)
-    
-    high_odds_found = False
-    for match in matches:
-        team1 = match.get('team1', '未知')
-        team2 = match.get('team2', '未知')
-        all_odds = match.get('allOdds', [])
-        
-        high_odds = [o for o in all_odds if o.get('value', 0) >= 1.80]
-        
-        if high_odds: 
-            high_odds_found = True
-            output_lines.append(f"\n  🔥 {team1} vs {team2}:")
-            for odds in high_odds:
-                bet_type = odds.get('betType', '未知')
-                value = odds.get('value', 0)
-                text = odds.get('text', '')
-                handicap = odds.get('handicap', '')
-                is_team1 = odds.get('isTeam1', False)
-                
-                team_str = "主队" if is_team1 else "客队"
-                handicap_str = f"({handicap})" if handicap else ""
-                
-                output_lines.append(f"    ★ {bet_type} {team_str} {handicap_str}:  {text} (值={value:.2f})")
-    
-    if not high_odds_found:
-        output_lines.append("  (暂无高水位)")
-    
-    # 水位分布统计
-    output_lines.append(f"\n{separator}")
-    output_lines.append(f"【水位分布统计】")
-    output_lines.append(separator)
-    
-    all_values = []
-    for match in matches:
-        for odds in match.get('allOdds', []):
-            all_values.append(odds.get('value', 0))
-    
-    if all_values: 
-        ranges = [
-            (0, 1.20, "极低水位 (0-1.20)"),
-            (1.20, 1.50, "低水位 (1.20-1.50)"),
-            (1.50, 1.80, "中等水位 (1.50-1.80)"),
-            (1.80, 2.00, "较高水位 (1.80-2.00)"),
-            (2.00, 3.00, "高水位 (2.00-3.00)"),
-            (3.00, 100, "超高水位 (3.00+)")
-        ]
-        
-        for low, high, desc in ranges:
-            count = len([v for v in all_values if low <= v < high])
-            if count > 0:
-                pct = count / len(all_values) * 100
-                output_lines.append(f"  {desc}: {count}个 ({pct:.1f}%)")
-        
-        avg_value = sum(all_values) / len(all_values)
-        max_value = max(all_values)
-        min_value = min(all_values)
-        
-        output_lines.append(f"\n  统计:")
-        output_lines.append(f"    平均水位: {avg_value:.2f}")
-        output_lines. append(f"    最高水位: {max_value:. 2f}")
-        output_lines.append(f"    最低水位: {min_value:. 2f}")
-    else:
-        output_lines.append("  (无水位数据)")
-    
-    # 按盘口类型统计
-    output_lines.append(f"\n{separator}")
-    output_lines.append(f"【按盘口类型统计】")
-    output_lines.append(separator)
-    
-    bet_type_stats = {}
-    for match in matches:
-        for odds in match.get('allOdds', []):
-            bet_type = odds.get('betType', '其他')
-            if bet_type not in bet_type_stats: 
-                bet_type_stats[bet_type] = {'count':  0, 'values': []}
-            bet_type_stats[bet_type]['count'] += 1
-            bet_type_stats[bet_type]['values'].append(odds.get('value', 0))
-    
-    for bet_type, stats in sorted(bet_type_stats.items(), key=lambda x: -x[1]['count']):
-        count = stats['count']
-        values = stats['values']
-        avg = sum(values) / len(values) if values else 0
-        output_lines.append(f"  {bet_type}: {count}个水位, 平均={avg:.2f}")
-    
-    output_lines.append(f"\n{separator}")
-    output_lines.append(f"【报告结束】")
-    output_lines.append(separator)
-    
-    # 合并所有行
-    full_output = "\n".join(output_lines)
-    
-    # 打印到控制台
-    if print_to_console:
-        print(full_output)
-    
-    return full_output
-
-
-def save_odds_to_file(data, filename=None):
-    """
-    保存水位数据到文件
-    
-    Args:
-        data:  从 get_all_odds_data() 返回的数据
-        filename: 文件名，如果为None则自动生成
-    """
-    if filename is None:
-        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-        filename = f"odds_data_{timestamp}.txt"
-    
-    output = print_detailed_odds_data(data, print_to_console=False)
-    
-    with open(filename, 'w', encoding='utf-8') as f:
-        f.write(output)
-    
-    print(f"✓ 水位数据已保存到:  {filename}")
-    return filename
-
-
-def export_odds_to_json(data, filename=None):
-    """
-    导出水位数据到JSON文件，便于程序化分析
-    
-    Args: 
-        data: 从 get_all_odds_data() 返回的数据
-        filename:  文件名，如果为None则自动生成
-    """
-    if filename is None: 
-        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-        filename = f"odds_data_{timestamp}.json"
-    
-    # 添加导出时间戳
-    export_data = {
-        'export_time': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-        'data': data
-    }
-    
-    with open(filename, 'w', encoding='utf-8') as f:
-        json.dump(export_data, f, ensure_ascii=False, indent=2)
-    
-    print(f"✓ 水位数据已导出到JSON: {filename}")
-    return filename
-
-
-# ================== BettingBot 类 ==================
-class BettingBot:  
     def __init__(self):
         self.driver = None
-        self.is_running = False
-        self. is_logged_in = False
-        self. wait = None
+        self. is_running = False
+        self.is_logged_in = False
+        self.wait = None
         self.auto_bet_enabled = False
-        self. bet_amount = 2
-        self.bet_history = []
-        self.threshold_settings = {}
+        self.bet_amount = 2
+        self. bet_history = []
         self.current_matches = []
-        self.font_map = {}
-        # 新增：是否启用详细打印
-        self.enable_detailed_print = True
-        # 新增：是否保存到文件
-        self.save_to_file = False
+        self. odds_threshold = 1.80
+        self.raw_data = None
 
     def setup_driver(self, headless=False):
+        """初始化浏览器"""
         options = webdriver.ChromeOptions()
         options.add_experimental_option("excludeSwitches", ["enable-automation"])
         options.add_experimental_option('useAutomationExtension', False)
@@ -360,7 +76,7 @@ class BettingBot:
             options.add_argument("--headless=new")
 
         self.driver = webdriver.Chrome(options=options)
-        self.wait = WebDriverWait(self. driver, 60)
+        self.wait = WebDriverWait(self.driver, 60)
 
         self.driver.execute_cdp_cmd('Page.addScriptToEvaluateOnNewDocument', {
             'source': '''
@@ -370,6 +86,7 @@ class BettingBot:
         })
 
     def handle_password_popup(self, log_callback):
+        """处理简易密码弹窗"""
         log_callback("检测并处理简易密码弹窗...")
 
         for attempt in range(15):
@@ -378,7 +95,7 @@ class BettingBot:
                     var popup = document.getElementById('c_alert_modify');
                     if (popup) {
                         var style = window.getComputedStyle(popup);
-                        return popup.offsetWidth > 0 && popup.offsetHeight > 0 &&
+                        return popup.offsetWidth > 0 && popup. offsetHeight > 0 &&
                                style.display !== 'none' && style. visibility !== 'hidden';
                     }
                     return false;
@@ -387,7 +104,7 @@ class BettingBot:
                 if not popup_visible:
                     has_popup_text = self.driver.execute_script("""
                         return document.body.innerText.includes('简易密码') ||
-                               document.body.innerText.includes('快速登入');
+                               document.body. innerText.includes('快速登入');
                     """)
                     if not has_popup_text:
                         log_callback("✓ 弹窗已关闭或不存在")
@@ -397,7 +114,7 @@ class BettingBot:
                     var elements = document.querySelectorAll('div, button, span');
                     for (var elem of elements) {
                         if (elem.innerText.trim() === '否' &&
-                            elem.offsetWidth > 0 && elem.offsetHeight > 0) {
+                            elem. offsetWidth > 0 && elem.offsetHeight > 0) {
                             elem.click();
                             return {success: true};
                         }
@@ -410,43 +127,29 @@ class BettingBot:
                     continue
 
                 time.sleep(1)
-            except:  
+            except: 
                 time.sleep(1)
 
         return False
 
     def wait_for_matches_to_load(self, log_callback):
+        """等待比赛数据加载"""
         log_callback("\n⏳ 等待比赛数据加载...")
 
         for attempt in range(10):
             time.sleep(2)
-
+            
             self.driver.execute_script("window.scrollTo(0, 500);")
             time.sleep(0.5)
             self.driver.execute_script("window.scrollTo(0, 1000);")
             time.sleep(0.5)
-            self.driver.execute_script("window.scrollTo(0, 1500);")
-            time.sleep(0.5)
-            self.driver.execute_script("window.scrollTo(0, 800);")
+            self.driver.execute_script("window.scrollTo(0, 300);")
             time.sleep(1)
 
             has_matches = self.driver.execute_script("""
-                var elements = document.querySelectorAll('*');
-                var foundMatch = false;
-
-                for (var i = 0; i < elements.length; i++) {
-                    var text = elements[i].textContent || '';
-                    if (/(Esports|vs|FIFA|Real Madrid|Manchester|半场|上半场|下半场|让球|大小)/i.test(text) &&
-                        text.length > 3 && text.length < 200) {
-                        var rect = elements[i].getBoundingClientRect();
-                        if (rect.y > 100 && rect.y < 3000 && rect.width > 50) {
-                            foundMatch = true;
-                            break;
-                        }
-                    }
-                }
-
-                return foundMatch;
+                var text = document.body.innerText || '';
+                return text.includes('让球') || text.includes('独赢') || 
+                       text.includes('联赛') || text.includes('Esports');
             """)
 
             if has_matches:
@@ -454,201 +157,248 @@ class BettingBot:
                 time.sleep(2)
                 return True
 
-            log_callback(f"  尝试 {attempt + 1}/10 - 未检测到数据，继续等待...")
+            log_callback(f"  尝试 {attempt + 1}/10 - 等待中...")
 
-        log_callback("⚠️ 等待超时，但继续尝试获取数据")
+        log_callback("⚠️ 等待超时，继续尝试获取数据")
         return False
 
-    def decode_tahoma2_font(self, log_callback):
-        log_callback("\n🔤 分析 TAHOMA 字体...")
-
-        font_map = self.driver.execute_script("""
-            function decodeTahoma2() {
-                var samples = [];
-                var allElements = document.querySelectorAll('*');
-
-                allElements.forEach(function(elem) {
-                    var style = window.getComputedStyle(elem);
-                    var fontFamily = style.fontFamily || '';
-
-                    if (fontFamily.toUpperCase().includes('TAHOMA')) {
-                        var rect = elem.getBoundingClientRect();
-                        if (rect.width > 0 && rect.height > 0 && rect.y > 50 && rect.y < 2000) {
-                            var text = elem.textContent || '';
-
-                            samples.push({
-                                text: text. substring(0, 50),
-                                x: Math.round(rect.x),
-                                y: Math.round(rect. y),
-                                width: Math.round(rect.width),
-                                height: Math.round(rect.height),
-                                fontFamily: fontFamily
-                            });
-                        }
-                    }
-                });
-
-                samples.sort(function(a, b) { return a.y - b.y; });
-
-                return {
-                    samples: samples. slice(0, 50),
-                    count: samples.length
-                };
-            }
-
-            return decodeTahoma2();
-        """)
-
-        log_callback(f"  找到 {font_map.get('count', 0)} 个使用 TAHOMA 字体的元素")
-
-        return font_map
-
-    def find_match_container(self, log_callback):
-        log_callback("\n🎯 定位比赛列表区域...")
-
-        container_info = self.driver.execute_script("""
-            function findMatchContainer() {
-                var result = {
-                    byClassName: [],
-                    byContent: []
-                };
-
-                var classPatterns = ['match', 'event', 'game', 'odds', 'bet', 'league'];
-                classPatterns.forEach(function(pattern) {
-                    var elems = document.querySelectorAll('[class*="' + pattern + '"]');
-                    elems.forEach(function(elem) {
-                        var rect = elem.getBoundingClientRect();
-                        if (rect. height > 100 && rect.width > 400 && rect.y > 50 && rect.y < 1500) {
-                            result. byClassName.push({
-                                pattern: pattern,
-                                className: elem.className. substring(0, 80),
-                                y: Math.round(rect.y),
-                                height: Math.round(rect.height)
-                            });
-                        }
-                    });
-                });
-
-                return result;
-            }
-
-            return findMatchContainer();
-        """)
-
-        log_callback(f"  通过类名找到:  {len(container_info.get('byClassName', []))} 个")
-
-        return container_info
-
-    def get_raw_elements(self, log_callback):
-        log_callback("\n📊 获取原始元素...")
-
-        raw_data = self.driver.execute_script("""
-            function getRawElements() {
-                var elements = [];
-                var allElems = document.querySelectorAll('*');
-
-                allElems.forEach(function(elem) {
-                    var rect = elem. getBoundingClientRect();
-                    if (rect.width > 10 && rect.width < 200 &&
-                        rect.height > 8 && rect.height < 60 &&
-                        rect.y > 150 && rect.y < 2000 &&
-                        rect.x > 30) {
-
-                        var text = elem.textContent || '';
-                        if (text.trim() && text.length < 50) {
-                            elements.push({
-                                text: text. trim(),
-                                x: Math. round(rect.x),
-                                y: Math.round(rect.y),
-                                width: Math.round(rect.width),
-                                height: Math.round(rect.height),
-                                tag: elem.tagName
-                            });
-                        }
-                    }
-                });
-
-                elements.sort(function(a, b) {
-                    if (Math.abs(a.y - b.y) < 12) {
-                        return a. x - b.x;
-                    }
-                    return a. y - b.y;
-                });
-
-                return elements;
-            }
-            return getRawElements();
-        """)
-
-        log_callback(f"  找到 {len(raw_data)} 个可能的元素")
-
-        current_y = -1
-        row_num = 0
-        for elem in raw_data[: 80]:  
-            if abs(elem['y'] - current_y) > 12:
-                row_num += 1
-                current_y = elem['y']
-                log_callback(f"\n  行 {row_num} (Y={elem['y']}):")
-
-            log_callback(f"    X={elem['x']: 4d} [{elem['text'][:25]}]")
-
-        return raw_data
     def login(self, username, password, log_callback):
+        """登录 - 修复版"""
         try:
             log_callback("正在访问登录页面...")
             self.driver.get(URL)
             time.sleep(8)
-
-            username_field = self.wait.until(EC.element_to_be_clickable((By.ID, "usr")))
-            log_callback("✓ 找到用户名输入框")
-            self.driver.execute_script("arguments[0].value = arguments[1];", username_field, username)
-            log_callback(f"✓ 已输入用户名: {username}")
-
-            password_field = self.wait.until(EC.element_to_be_clickable((By.ID, "pwd")))
-            self.driver.execute_script("arguments[0].value = arguments[1];", password_field, password)
-            log_callback("✓ 已输入密码")
-
-            login_button = self.wait.until(EC.element_to_be_clickable((By.ID, "btn_login")))
-            self.driver.execute_script("arguments[0].click();", login_button)
-            log_callback("✓ 已点击登录按钮")
-
+            
+            # ========== 方法1: 使用ID查找 ==========
+            log_callback("尝试查找登录表单...")
+            
+            # 输入用户名
+            username_filled = False
+            try:
+                username_field = self.wait.until(EC.presence_of_element_located((By.ID, "usr")))
+                self.driver.execute_script("arguments[0].value = arguments[1];", username_field, username)
+                username_filled = True
+                log_callback(f"✓ 已输入用户名: {username}")
+            except: 
+                log_callback("  ID='usr' 未找到，尝试其他方式...")
+            
+            if not username_filled:
+                # 备用方法：使用JavaScript查找
+                result = self.driver.execute_script(f"""
+                    var inputs = document.querySelectorAll('input');
+                    for(var i=0; i<inputs.length; i++){{
+                        var input = inputs[i];
+                        var type = input.type || '';
+                        var placeholder = input.placeholder || '';
+                        var name = input.name || '';
+                        var id = input.id || '';
+                        
+                        if(type === 'text' && (placeholder. includes('用户') || placeholder.includes('帐号') || 
+                           placeholder.includes('账号') || name.includes('usr') || name.includes('user') ||
+                           id.includes('usr') || id.includes('user'))){{
+                            input.value = '{username}';
+                            input. dispatchEvent(new Event('input', {{bubbles: true}}));
+                            return {{success: true, method: 'js_search'}};
+                        }}
+                    }}
+                    // 如果没找到，尝试第一个text输入框
+                    for(var i=0; i<inputs.length; i++){{
+                        if(inputs[i].type === 'text' && inputs[i].offsetWidth > 0){{
+                            inputs[i]. value = '{username}';
+                            inputs[i].dispatchEvent(new Event('input', {{bubbles: true}}));
+                            return {{success: true, method:  'first_text'}};
+                        }}
+                    }}
+                    return {{success:  false}};
+                """)
+                if result and result.get('success'):
+                    log_callback(f"✓ 已输入用户名 (方法:  {result.get('method')})")
+                    username_filled = True
+                else:
+                    log_callback("✗ 无法找到用户名输入框")
+                    return False
+            
+            # 输入密码
+            password_filled = False
+            try: 
+                password_field = self.wait.until(EC.presence_of_element_located((By.ID, "pwd")))
+                self.driver.execute_script("arguments[0].value = arguments[1];", password_field, password)
+                password_filled = True
+                log_callback("✓ 已输入密码")
+            except:
+                log_callback("  ID='pwd' 未找到，尝试其他方式...")
+            
+            if not password_filled: 
+                result = self.driver.execute_script(f"""
+                    var inputs = document.querySelectorAll('input[type="password"]');
+                    for(var i=0; i<inputs.length; i++){{
+                        if(inputs[i].offsetWidth > 0){{
+                            inputs[i].value = '{password}';
+                            inputs[i].dispatchEvent(new Event('input', {{bubbles: true}}));
+                            return {{success: true}};
+                        }}
+                    }}
+                    return {{success:  false}};
+                """)
+                if result and result.get('success'):
+                    log_callback("✓ 已输入密码 (备用方法)")
+                    password_filled = True
+                else:
+                    log_callback("✗ 无法找到密码输入框")
+                    return False
+            
+            time.sleep(1)
+            
+            # ========== 点击登录按钮 - 多种方法 ==========
+            log_callback("尝试点击登录按钮...")
+            login_clicked = False
+            
+            # 方法1: 通过ID
+            try:
+                login_btn = self.driver.find_element(By.ID, "btn_login")
+                if login_btn. is_displayed():
+                    login_btn.click()
+                    login_clicked = True
+                    log_callback("✓ 已点击登录按钮 (ID='btn_login')")
+            except:
+                pass
+            
+            # 方法2: 通过class
+            if not login_clicked:
+                try:
+                    buttons = self.driver.find_elements(By.CSS_SELECTOR, "button.btn_login, . login-btn, .btn-login")
+                    for btn in buttons:
+                        if btn. is_displayed():
+                            btn.click()
+                            login_clicked = True
+                            log_callback("✓ 已点击登录按钮 (CSS)")
+                            break
+                except:
+                    pass
+            
+            # 方法3: 通过文本内容
+            if not login_clicked:
+                try:
+                    buttons = self.driver.find_elements(By.TAG_NAME, "button")
+                    for btn in buttons:
+                        text = btn.text.strip()
+                        if text in ['登录', '登入', '立即登录', 'Login', '登 录']:
+                            if btn.is_displayed():
+                                btn.click()
+                                login_clicked = True
+                                log_callback(f"✓ 已点击登录按钮 (文本='{text}')")
+                                break
+                except:
+                    pass
+            
+            # 方法4: JavaScript查找并点击
+            if not login_clicked:
+                result = self.driver.execute_script("""
+                    // 查找登录按钮
+                    var selectors = [
+                        '#btn_login',
+                        'button[type="submit"]',
+                        '. btn_login',
+                        '.login-btn',
+                        'button.login',
+                        'input[type="submit"]'
+                    ];
+                    
+                    for(var i=0; i<selectors.length; i++){
+                        var elem = document.querySelector(selectors[i]);
+                        if(elem && elem.offsetWidth > 0){
+                            elem.click();
+                            return {success: true, selector: selectors[i]};
+                        }
+                    }
+                    
+                    // 通过文本查找
+                    var allElements = document.querySelectorAll('button, div, span, a, input');
+                    var loginTexts = ['登录', '登入', '立即登录', 'Login', '登 录', '确定'];
+                    
+                    for(var i=0; i<allElements.length; i++){
+                        var el = allElements[i];
+                        var text = (el.innerText || el.value || '').trim();
+                        
+                        for(var j=0; j<loginTexts.length; j++){
+                            if(text === loginTexts[j] && el.offsetWidth > 0 && el.offsetHeight > 0){
+                                el.click();
+                                return {success: true, text: text};
+                            }
+                        }
+                    }
+                    
+                    return {success: false};
+                """)
+                
+                if result and result.get('success'):
+                    login_clicked = True
+                    if result.get('selector'):
+                        log_callback(f"✓ 已点击登录按钮 (JS:  {result.get('selector')})")
+                    else:
+                        log_callback(f"✓ 已点击登录按钮 (JS文本: {result.get('text')})")
+            
+            # 方法5: 模拟回车
+            if not login_clicked:
+                log_callback("  尝试使用回车键登录...")
+                try:
+                    from selenium.webdriver.common.keys import Keys
+                    password_inputs = self.driver.find_elements(By.CSS_SELECTOR, 'input[type="password"]')
+                    for inp in password_inputs:
+                        if inp.is_displayed():
+                            inp.send_keys(Keys.RETURN)
+                            login_clicked = True
+                            log_callback("✓ 已发送回车键")
+                            break
+                except:
+                    pass
+            
+            if not login_clicked:
+                log_callback("✗ 无法找到或点击登录按钮")
+                # 打印页面上所有按钮信息用于调试
+                self.driver.execute_script("""
+                    console.log('=== 页面按钮调试 ===');
+                    var buttons = document.querySelectorAll('button, input[type="submit"], . btn');
+                    buttons.forEach(function(btn, idx){
+                        console.log(idx + ': ' + btn.tagName + ' | id=' + btn.id + ' | class=' + btn.className + ' | text=' + btn.innerText);
+                    });
+                """)
+                return False
+            
+            # 等待登录响应
             log_callback("\n等待登录响应...")
             time.sleep(10)
-
+            
+            # 处理弹窗
             self.handle_password_popup(log_callback)
             time.sleep(3)
-
+            
+            # 等待主页面加载
             log_callback("\n等待主页面加载...")
-            for i in range(12):
+            for i in range(10):
                 time.sleep(5)
                 elapsed = (i + 1) * 5
                 log_callback(f"  已等待 {elapsed} 秒...")
-
-                if elapsed % 10 == 0:
-                    try:
-                        found = self.driver.execute_script("""
-                            var elements = document.querySelectorAll('*');
-                            for (var elem of elements) {
-                                var text = (elem.textContent || '').trim();
-                                if (text === '滚球' && elem.offsetWidth > 0 && elem. offsetHeight > 0) {
-                                    return true;
-                                }
-                            }
-                            return false;
-                        """)
-                        if found:
-                            log_callback(f"✓ 页面已加载完成")
-                            break
-                    except:
-                        pass
+                
+                # 检查是否登录成功
+                is_logged = self.driver.execute_script("""
+                    return document.body.innerText.includes('滚球') || 
+                           document.body.innerText.includes('余额') ||
+                           document.body.innerText.includes('账户');
+                """)
+                if is_logged:
+                    log_callback("✓ 检测到登录成功")
+                    break
 
             log_callback(f"\n当前URL: {self.driver.current_url}")
 
+            # 保存Cookies
             cookies = self.driver.get_cookies()
             with open(COOKIES_FILE, "wb") as f:
                 pickle.dump(cookies, f)
-            log_callback(f"✓ Cookies 已保���")
+            log_callback("✓ Cookies 已保存")
 
+            # 进入滚球页面
             log_callback("\n进入滚球页面...")
             time.sleep(3)
 
@@ -666,8 +416,8 @@ class BettingBot:
                 return {success: false};
             """)
 
-            if click_result.get('success'):
-                log_callback(f"✓ 已点击滚球")
+            if click_result. get('success'):
+                log_callback("✓ 已点击滚球")
 
             log_callback("等待滚球页面加载...")
             time.sleep(10)
@@ -676,620 +426,416 @@ class BettingBot:
 
             self.is_logged_in = True
             log_callback("\n✓ 登录流程完成！")
-
             return True
 
         except Exception as e:
             log_callback(f"\n✗ 登录失败:  {str(e)}")
+            import traceback
+            log_callback(traceback.format_exc())
             return False
 
-    def get_all_odds_data(self):
-        try:
-            self.driver.execute_script("window.scrollTo(0, 600);")
+    def get_raw_page_data(self):
+        """获取页面所有原始数据"""
+        try: 
+            self.driver.execute_script("window.scrollTo(0, 500);")
+            time.sleep(0.3)
+            self.driver.execute_script("window.scrollTo(0, 1000);")
+            time.sleep(0.3)
+            self.driver.execute_script("window.scrollTo(0, 400);")
             time.sleep(0.5)
-            self.driver.execute_script("window.scrollTo(0, 1200);")
-            time.sleep(0.5)
-            self.driver.execute_script("window. scrollTo(0, 400);")
-            time.sleep(0.8)
 
-            layout_config_json = json.dumps(LAYOUT_CONFIG)
-
-            data = self.driver.execute_script(f"""
-                function getAllOddsData() {{
-                    var LAYOUT_CONFIG = {layout_config_json};
-                    
-                    var matches = [];
-                    var allTextData = [];
-                    var debugInfo = {{
-                        totalScanned: 0,
-                        tahoma2Elements: 0,
-                        fromDataAttr: 0,
-                        fromPseudo: 0,
-                        fromText: 0,
-                        privateUnicode: 0,
-                        teamNamesFound: 0,
-                        oddsFound: 0,
-                        matchesDetected: 0
-                    }};
-
-                    function getFromDataAttributes(elem) {{
-                        var attrs = ['data-value', 'data-odds', 'data-num', 'data-price',
-                                    'data-text', 'data-content', 'data-v', 'data-o', 'data-bet'];
-
-                        for (var i = 0; i < attrs.length; i++) {{
-                            var val = elem.getAttribute(attrs[i]);
-                            if (val && /[\\d\\.]/.test(val)) {{
-                                debugInfo.fromDataAttr++;
-                                return val;
-                            }}
-                        }}
-
-                        for (var j = 0; j < elem.attributes.length; j++) {{
-                            var attr = elem. attributes[j];
-                            if (attr.name.startsWith('data-') && /^[\\d\\.\\-\\+\\/]+$/.test(attr.value)) {{
-                                debugInfo. fromDataAttr++;
-                                return attr.value;
-                            }}
-                        }}
-
-                        return null;
-                    }}
-
-                    function getFromPseudoElements(elem) {{
-                        try {{
-                            var before = window.getComputedStyle(elem, '::before').content;
-                            var after = window.getComputedStyle(elem, '::after').content;
-
-                            var result = '';
-
-                            if (before && before !== 'none' && before !== 'normal') {{
-                                result += before. replace(/['"]/g, '');
-                            }}
-
-                            if (after && after !== 'none' && after !== 'normal') {{
-                                result += after.replace(/['"]/g, '');
-                            }}
-
-                            if (result && /\\d/. test(result)) {{
-                                debugInfo.fromPseudo++;
-                                return result. trim();
-                            }}
-                        }} catch(e) {{}}
-
-                        return null;
-                    }}
-
-                    function tryDecodePrivateUnicode(text) {{
-                        if (!text) return null;
-
-                        var decoded = '';
-                        var hasPrivate = false;
-
-                        for (var i = 0; i < text.length; i++) {{
-                            var code = text.charCodeAt(i);
-
-                            if (code >= 0xE000 && code <= 0xF8FF) {{
-                                hasPrivate = true;
-                                debugInfo.privateUnicode++;
-
-                                var mapped = code - 0xE000;
-                                if (mapped >= 0 && mapped <= 9) {{
-                                    decoded += mapped. toString();
-                                }} else if (code === 0xE02E || code === 0xE02D) {{
-                                    decoded += '. ';
-                                }} else {{
-                                    decoded += '?';
-                                }}
-                            }} else {{
-                                decoded += text[i];
-                            }}
-                        }}
-
-                        if (hasPrivate) {{
-                            return decoded;
-                        }}
-
-                        return null;
-                    }}
-
-                    function getFromAriaOrTitle(elem) {{
-                        var ariaLabel = elem.getAttribute('aria-label');
-                        var ariaValue = elem.getAttribute('aria-valuenow');
-                        var title = elem.getAttribute('title');
-
-                        var value = ariaLabel || ariaValue || title;
-                        if (value && /\\d/.test(value)) {{
-                            return value;
-                        }}
-                        return null;
-                    }}
-
-                    function getElementText(elem) {{
-                        var methods = [
-                            function() {{ return getFromDataAttributes(elem); }},
-                            function() {{ return getFromAriaOrTitle(elem); }},
-                            function() {{ return getFromPseudoElements(elem); }},
-                            function() {{
-                                var t = elem.textContent || '';
-                                var decoded = tryDecodePrivateUnicode(t);
-                                if (decoded) return decoded;
-                                return null;
-                            }},
-                            function() {{
-                                var t = elem. innerText || elem.textContent || '';
-                                t = t.split('\\n')[0]. trim();
-                                if (t && t.length < 60) {{
-                                    debugInfo.fromText++;
-                                    return t;
-                                }}
-                                return null;
-                            }}
-                        ];
-
-                        for (var i = 0; i < methods.length; i++) {{
-                            try {{
-                                var result = methods[i]();
-                                if (result && result.trim()) {{
-                                    return result.trim();
-                                }}
-                            }} catch(e) {{}}
-                        }}
-
-                        return '';
-                    }}
-
-                    function getBetTypeByX(x) {{
-                        for (var betType in LAYOUT_CONFIG) {{
-                            var range = LAYOUT_CONFIG[betType];
-                            if (x >= range[0] && x < range[1]) {{
-                                return betType;
-                            }}
-                        }}
-                        return '其他';
-                    }}
-
+            raw_data = self.driver.execute_script("""
+                function getRawPageData() {
+                    var elements = [];
                     var allElements = document.querySelectorAll('*');
-
-                    allElements.forEach(function(elem) {{
-                        debugInfo.totalScanned++;
-
-                        try {{
+                    
+                    allElements.forEach(function(elem) {
+                        try {
                             var rect = elem.getBoundingClientRect();
-
                             if (rect.width <= 0 || rect.height <= 0) return;
+                            if (rect.width > 500 || rect.height > 100) return;
                             if (rect.y < 50 || rect.y > 3000) return;
-
-                            var style = window.getComputedStyle(elem);
-                            var fontFamily = style.fontFamily || '';
-                            if (fontFamily.toUpperCase().includes('TAHOMA')) {{
-                                debugInfo.tahoma2Elements++;
-                            }}
-
-                            var text = getElementText(elem);
-
-                            if (text && text.length > 0 && text.length < 80) {{
-                                allTextData.push({{
-                                    text: text,
-                                    x: Math. round(rect.x),
-                                    y: Math.round(rect.y),
-                                    width: Math.round(rect. width),
-                                    height:  Math.round(rect.height),
-                                    tagName: elem.tagName,
-                                    className: elem.className || ''
-                                }});
-                            }}
-                        }} catch(e) {{}}
-                    }});
-
-                    var seen = new Set();
-                    var uniqueData = [];
-                    allTextData.forEach(function(item) {{
-                        var key = item.text + '_' + item.x + '_' + item.y;
-                        if (!seen.has(key)) {{
-                            seen.add(key);
-                            uniqueData.push(item);
-                        }}
-                    }});
-                    allTextData = uniqueData;
-
-                    var oddsPattern = /^\\d{{1,2}}\\.\\d{{1,3}}$/;
-                    var handicapPattern = /^[+-]?\\d+(\\.\\d)?(\\/\\d+(\\.\\d)?)?$/;
-                    var overUnderPattern = /^[大小]\\s*\\d+(\\.\\d)?$/;
-                    var timePattern = /(上半场|下半场|中场|半场|第[一二三四1-4]节)\\s*\\d+/;
-                    var leaguePattern = /(杯|联赛|U23|U20|U21|超级|甲级|乙级|亚洲|NBA|CBA|足球|篮球|Esports|电竞|FIFA|GT|模拟|女)/i;
-
-                    var matchStarts = [];
-                    allTextData.forEach(function(item) {{
-                        if (timePattern.test(item.text) && item.x < 250) {{
-                            matchStarts.push({{
-                                time: item.text,
-                                y: item.y,
-                                x: item.x
-                            }});
-                        }}
-                    }});
-
-                    matchStarts.sort(function(a, b) {{ return a.y - b.y; }});
-                    debugInfo.matchesDetected = matchStarts.length;
-
-                    function findLeagueForY(y) {{
-                        var league = '';
-                        allTextData.forEach(function(item) {{
-                            if (leaguePattern.test(item. text) && item.text.length > 3 && 
-                                item.text.length < 80 && item.y < y) {{
-                                league = item.text;
-                            }}
-                        }});
-                        return league;
-                    }}
-
-                    matchStarts.forEach(function(matchStart, idx) {{
-                        var matchId = idx + 1;
-                        
-                        var startY = matchStart.y;
-                        var endY = matchStarts[idx + 1] ? matchStarts[idx + 1].y - 10 : startY + 250;
-
-                        var match = {{
-                            id: matchId,
-                            league: findLeagueForY(startY),
-                            time: matchStart.time,
-                            team1: '',
-                            team1Score: '',
-                            team2: '',
-                            team2Score:  '',
-                            oddsData: {{
-                                '让球': {{ team1: [], team2: [] }},
-                                '大/小': {{ team1: [], team2: [] }},
-                                '独赢': {{ team1: [], team2: [], draw: [] }},
-                                '下个进球': {{ team1: [], team2: [], none: [] }},
-                                '双方球队进球': {{ yes: [], no: [] }},
-                                '单/双': {{ odd: [], even: [] }},
-                                '队伍1进球': {{ team1: [], team2: [] }},
-                                '队伍2进球': {{ team1: [], team2: [] }},
-                                '让球上半场': {{ team1: [], team2: [] }},
-                                '大/小上半场': {{ team1: [], team2: [] }},
-                                '独赢上半场': {{ team1: [], team2: [], draw: [] }}
-                            }},
-                            team1Odds: [],
-                            team2Odds: [],
-                            allOdds: []
-                        }};
-
-                        var teamsInRange = allTextData.filter(function(item) {{
-                            return item.y > startY && item.y < endY &&
-                                   item.x < 280 &&
-                                   item.text.length >= 2 && item.text.length <= 50 &&
-                                   ! oddsPattern.test(item.text) &&
-                                   !/^\\d+$/.test(item.text) &&
-                                   !/^[+-]?\\d+(\\.\\d)?/.test(item.text) &&
-                                   !/(让球|大小|独赢|进球|单双|半场|上半场|下半场|主|客|大|小|vs|确认|其他|热门|今日|早盘|赛事)/.test(item.text) &&
-                                   (/[\\u4e00-\\u9fa5]{{2,}}/.test(item.text) || /[A-Za-z]{{3,}}/.test(item.text) || /\\([^)]+\\)/.test(item.text));
-                        }});
-
-                        teamsInRange.sort(function(a, b) {{ return a.y - b.y; }});
-
-                        var team1Y = startY + 40;
-                        var team2Y = startY + 80;
-                        
-                        if (teamsInRange[0]) {{
-                            match.team1 = teamsInRange[0].text;
-                            team1Y = teamsInRange[0].y;
-                            debugInfo.teamNamesFound++;
-                        }}
-                        if (teamsInRange[1]) {{
-                            match.team2 = teamsInRange[1].text;
-                            team2Y = teamsInRange[1].y;
-                            debugInfo.teamNamesFound++;
-                        }}
-
-                        var scoresInRange = allTextData.filter(function(item) {{
-                            return item.y > startY && item.y < endY &&
-                                   item.x < 150 && item.x > 30 &&
-                                   /^\\d{{1,3}}$/.test(item.text) &&
-                                   parseInt(item.text) <= 50;
-                        }});
-                        scoresInRange.sort(function(a, b) {{ return a.y - b.y; }});
-                        if (scoresInRange[0]) match.team1Score = scoresInRange[0].text;
-                        if (scoresInRange[1]) match.team2Score = scoresInRange[1].text;
-
-                        var midY = (team1Y + team2Y) / 2;
-                        var rowTolerance = Math.abs(team2Y - team1Y) / 2 + 5;
-
-                        var allOddsInMatch = allTextData.filter(function(item) {{
-                            return item. y > startY && item.y < endY &&
-                                   item.x > 400 &&
-                                   oddsPattern.test(item.text);
-                        }});
-
-                        var handicapsInMatch = allTextData.filter(function(item) {{
-                            return item.y > startY && item.y < endY &&
-                                   item.x > 400 &&
-                                   (handicapPattern.test(item. text) || overUnderPattern. test(item.text));
-                        }});
-
-                        allOddsInMatch.sort(function(a, b) {{
-                            if (Math.abs(a.y - b.y) < 10) {{
-                                return a.x - b.x;
-                            }}
-                            return a.y - b.y;
-                        }});
-
-                        allOddsInMatch.forEach(function(o) {{
-                            var betType = getBetTypeByX(o.x);
-                            var isTeam1Row = o.y < midY;
+                            if (rect.x < 0 || rect.x > 1600) return;
                             
-                            var nearbyHandicap = '';
-                            handicapsInMatch.forEach(function(h) {{
-                                if (Math.abs(h.y - o.y) < 15 && Math.abs(h.x - o.x) < 80) {{
-                                    nearbyHandicap = h.text;
-                                }}
-                            }});
-
-                            var oddsObj = {{
-                                betType: betType,
-                                value: parseFloat(o.text),
-                                text: o.text,
-                                handicap: nearbyHandicap,
-                                x: o.x,
-                                y: o.y,
-                                isTeam1: isTeam1Row
-                            }};
-
-                            if (match.oddsData[betType]) {{
-                                if (betType === '独赢' || betType === '独赢上半场') {{
-                                    if (isTeam1Row) {{
-                                        match.oddsData[betType].team1.push(oddsObj);
-                                    }} else {{
-                                        var distToTeam2 = Math.abs(o. y - team2Y);
-                                        if (distToTeam2 < rowTolerance) {{
-                                            match.oddsData[betType].team2.push(oddsObj);
-                                        }} else {{
-                                            match. oddsData[betType].draw.push(oddsObj);
-                                        }}
-                                    }}
-                                }} else if (betType === '双方球队进球') {{
-                                    if (isTeam1Row) {{
-                                        match.oddsData[betType].yes.push(oddsObj);
-                                    }} else {{
-                                        match.oddsData[betType]. no.push(oddsObj);
-                                    }}
-                                }} else if (betType === '单/双') {{
-                                    if (isTeam1Row) {{
-                                        match.oddsData[betType].odd.push(oddsObj);
-                                    }} else {{
-                                        match.oddsData[betType]. even.push(oddsObj);
-                                    }}
-                                }} else if (betType === '下个进球') {{
-                                    if (isTeam1Row) {{
-                                        match. oddsData[betType].team1.push(oddsObj);
-                                    }} else {{
-                                        var distToTeam2 = Math.abs(o.y - team2Y);
-                                        if (distToTeam2 < rowTolerance) {{
-                                            match.oddsData[betType].team2.push(oddsObj);
-                                        }} else {{
-                                            match.oddsData[betType]. none.push(oddsObj);
-                                        }}
-                                    }}
-                                }} else {{
-                                    if (isTeam1Row) {{
-                                        match.oddsData[betType].team1.push(oddsObj);
-                                    }} else {{
-                                        match.oddsData[betType].team2.push(oddsObj);
-                                    }}
-                                }}
-                            }}
-
-                            if (isTeam1Row) {{
-                                match.team1Odds. push(oddsObj);
-                            }} else {{
-                                match. team2Odds.push(oddsObj);
-                            }}
-                            match.allOdds.push(oddsObj);
-                            debugInfo.oddsFound++;
-                        }});
-
-                        if (match.team1 || match.allOdds. length > 0) {{
-                            matches.push(match);
-                        }}
-                    }});
-
-                    var totalOdds = 0;
-                    matches.forEach(function(m) {{
-                        totalOdds += (m.team1Odds ?  m.team1Odds.length : 0);
-                        totalOdds += (m.team2Odds ?  m.team2Odds.length : 0);
-                    }});
-
-                    return {{
-                        matches: matches,
-                        total: matches.length,
-                        totalOdds: totalOdds,
-                        rawElements: allTextData. length,
-                        debug: debugInfo,
-                        layoutConfig: LAYOUT_CONFIG,
+                            var text = '';
+                            for (var i = 0; i < elem.childNodes.length; i++) {
+                                if (elem.childNodes[i]. nodeType === 3) {
+                                    text += elem.childNodes[i].textContent;
+                                }
+                            }
+                            text = text.trim();
+                            
+                            if (! text && elem.childNodes.length === 0) {
+                                text = (elem.textContent || '').trim();
+                            }
+                            
+                            if (! text || text. length > 60) return;
+                            if ((text.match(/\\n/g) || []).length > 2) return;
+                            
+                            elements.push({
+                                text: text,
+                                x: Math.round(rect.x),
+                                y: Math.round(rect. y),
+                                width: Math.round(rect.width),
+                                height: Math.round(rect.height),
+                                tag: elem.tagName
+                            });
+                        } catch(e) {}
+                    });
+                    
+                    var seen = new Set();
+                    var uniqueElements = [];
+                    elements.forEach(function(e) {
+                        var key = e.text + '_' + Math.round(e.x/5)*5 + '_' + Math. round(e.y/5)*5;
+                        if (!seen.has(key)) {
+                            seen.add(key);
+                            uniqueElements.push(e);
+                        }
+                    });
+                    
+                    uniqueElements.sort(function(a, b) {
+                        if (Math.abs(a.y - b.y) < 10) return a.x - b.x;
+                        return a.y - b.y;
+                    });
+                    
+                    return {
+                        elements: uniqueElements,
+                        total: uniqueElements.length,
                         timestamp: new Date().toISOString()
-                    }};
-                }}
-                return getAllOddsData();
+                    };
+                }
+                return getRawPageData();
             """)
 
-            if data:  
-                self.current_matches = data. get('matches', [])
-                
-                # 新增：详细打印水位数据
-                if self.enable_detailed_print:
-                    print_detailed_odds_data(data, print_to_console=True)
-                
-                # 新增：保存到文件
-                if self.save_to_file:
-                    save_odds_to_file(data)
-
-            return data
-
+            self.raw_data = raw_data
+            return raw_data
         except Exception as e:
-            print(f"Error:  {e}")
-            return None
+            return {'elements': [], 'total': 0, 'error': str(e)}
 
-    def click_odds_element(self, odds_text, x, y, log_callback):
+    def analyze_raw_data(self, raw_data, log_callback=None):
+        """分析原始数据，提取比赛信息"""
+        if not raw_data or not raw_data.get('elements'):
+            return {'matches': [], 'totalOdds': 0}
+
+        elements = raw_data['elements']
+
+        odds_pattern = re.compile(r'^\d{1,2}\.\d{1,2}$')
+        handicap_pattern = re.compile(r'^[+-]?\d+/?\d*\. ?\d*$')
+        time_pattern = re.compile(r'(上半场|下半场|中场|半场)\s*\d+:\d+|\d+:\d+')
+        score_pattern = re.compile(r'^\d{1,2}$')
+        league_pattern = re.compile(r'(联赛|杯|甲组|超级|Esports|FIFA|女)', re.IGNORECASE)
+
+        exclude_keywords = ['让球', '大小', '大/小', '独赢', '进球', '单双', '单/双', '半场',
+                           '上半场', '下半场', '主', '客', '和', '大', '小', '是', '否', '无',
+                           '队伍', '双方', '角球', '罚牌', '波胆', '主要玩法']
+
+        match_starts = []
+        for elem in elements:
+            if time_pattern.search(elem['text']) and elem['x'] < 250:
+                is_duplicate = False
+                for ms in match_starts:
+                    if abs(ms['y'] - elem['y']) < 60:
+                        is_duplicate = True
+                        break
+                if not is_duplicate:
+                    match_starts.append({'time': elem['text'], 'y': elem['y'], 'x': elem['x']})
+
+        match_starts.sort(key=lambda x: x['y'])
+
+        matches = []
+        total_odds_count = 0
+
+        for idx, match_start in enumerate(match_starts):
+            start_y = match_start['y'] - 40
+            end_y = match_starts[idx + 1]['y'] - 30 if idx + 1 < len(match_starts) else start_y + 180
+
+            match_elements = [e for e in elements if start_y <= e['y'] <= end_y]
+
+            match = {
+                'id': idx + 1,
+                'league': '',
+                'time': match_start['time'],
+                'team1': '', 'team2': '',
+                'score1': '', 'score2': '',
+                'team1_y': 0, 'team2_y': 0,
+                'odds':  {bt: {'handicap': '', 'home': [], 'away': [], 'draw': []} for bt in BET_TYPES_ORDER}
+            }
+
+            for elem in elements:
+                if elem['y'] < start_y and league_pattern.search(elem['text']) and len(elem['text']) < 50:
+                    match['league'] = elem['text']
+
+            team_candidates = []
+            for elem in match_elements:
+                text = elem['text']. strip()
+                x = elem['x']
+
+                if x < 50 or x > 280:
+                    continue
+                if len(text) < 2 or len(text) > 40:
+                    continue
+                if odds_pattern.match(text) or score_pattern.match(text):
+                    continue
+                if re.match(r'^[\d: ]+$', text) or re.match(r'^[+-]?\d', text):
+                    continue
+
+                is_keyword = any(kw in text for kw in exclude_keywords)
+                if is_keyword:
+                    continue
+
+                has_chinese = any('\u4e00' <= c <= '\u9fff' for c in text)
+                has_english = any(c.isalpha() for c in text)
+                if not has_chinese and not has_english: 
+                    continue
+
+                team_candidates.append(elem)
+
+            team_candidates.sort(key=lambda x: x['y'])
+
+            if len(team_candidates) >= 2:
+                match['team1'] = team_candidates[0]['text']
+                match['team1_y'] = team_candidates[0]['y']
+
+                for candidate in team_candidates[1:]: 
+                    if candidate['text'] != match['team1'] and abs(candidate['y'] - match['team1_y']) > 15:
+                        match['team2'] = candidate['text']
+                        match['team2_y'] = candidate['y']
+                        break
+
+                if not match['team2'] and len(team_candidates) >= 2:
+                    match['team2'] = team_candidates[1]['text']
+                    match['team2_y'] = team_candidates[1]['y']
+
+            elif len(team_candidates) == 1:
+                match['team1'] = team_candidates[0]['text']
+                match['team1_y'] = team_candidates[0]['y']
+
+            scores = [e for e in match_elements if e['x'] < 80 and score_pattern.match(e['text']) and int(e['text']) <= 20]
+            scores.sort(key=lambda x: x['y'])
+            if scores:
+                match['score1'] = scores[0]['text']
+            if len(scores) >= 2:
+                match['score2'] = scores[1]['text']
+
+            team1_y = match['team1_y'] if match['team1_y'] else start_y + 40
+            team2_y = match['team2_y'] if match['team2_y'] else team1_y + 40
+
+            team1_y_min, team1_y_max = team1_y - 25, team1_y + 25
+            team2_y_min, team2_y_max = team2_y - 25, team2_y + 25
+
+            for elem in match_elements:
+                if elem['x'] < 400: 
+                    continue
+
+                text, x, y = elem['text'], elem['x'], elem['y']
+
+                bet_type = None
+                for bt, (x_min, x_max) in LAYOUT_CONFIG.items():
+                    if x_min <= x < x_max:
+                        bet_type = bt
+                        break
+
+                if not bet_type:
+                    continue
+
+                if odds_pattern.match(text):
+                    odds_obj = {'value': float(text), 'text': text, 'x': x, 'y': y}
+
+                    is_team1_row = (team1_y_min <= y <= team1_y_max)
+                    is_team2_row = (team2_y_min <= y <= team2_y_max)
+
+                    if is_team1_row: 
+                        match['odds'][bet_type]['home'].append(odds_obj)
+                    elif is_team2_row:
+                        match['odds'][bet_type]['away'].append(odds_obj)
+                    else:
+                        dist1 = abs(y - team1_y)
+                        dist2 = abs(y - team2_y)
+                        if dist1 < dist2:
+                            match['odds'][bet_type]['home']. append(odds_obj)
+                        else:
+                            match['odds'][bet_type]['away']. append(odds_obj)
+
+                    total_odds_count += 1
+
+                elif handicap_pattern.match(text) or text.startswith('大') or text.startswith('小'):
+                    match['odds'][bet_type]['handicap'] = text
+
+            if match['team1'] or total_odds_count > 0:
+                matches.append(match)
+
+        self.current_matches = matches
+        return {'matches': matches, 'totalOdds': total_odds_count, 'statistics': {'total_matches': len(matches), 'total_odds': total_odds_count}}
+
+    def get_all_odds_data(self):
+        """综合获取数据"""
+        raw_data = self.get_raw_page_data()
+        analyzed_data = self.analyze_raw_data(raw_data)
+        analyzed_data['_raw'] = raw_data
+        return analyzed_data
+
+    def click_odds(self, odds_text, x, y, log_callback):
+        """点击水位"""
         try:
+            log_callback(f"  点击水位: {odds_text}")
             result = self.driver.execute_script(f"""
-                var targetValue = '{odds_text}';
+                var targetText = '{odds_text}';
                 var targetX = {x};
                 var targetY = {y};
-
-                var allElements = document.querySelectorAll('*');
-
-                for (var i = 0; i < allElements.length; i++) {{
-                    var elem = allElements[i];
-                    var text = (elem.innerText || '').trim();
-
-                    if (text === targetValue && elem.offsetWidth > 0 && elem.offsetHeight > 0) {{
-                        var rect = elem.getBoundingClientRect();
-
-                        if (Math.abs(rect.x - targetX) < 30 && Math.abs(rect. y - targetY) < 20) {{
-                            elem.scrollIntoView({{behavior: 'smooth', block: 'center'}});
-                            elem.click();
-                            return {{success: true, value: text}};
-                        }}
+                var elements = document.querySelectorAll('span, td, div, a');
+                var found = null;
+                var minDist = 9999;
+                for(var i=0; i<elements.length; i++){{
+                    var el = elements[i];
+                    var text = el.textContent. trim();
+                    if(text === targetText && el.offsetWidth > 0){{
+                        var rect = el.getBoundingClientRect();
+                        var dist = Math.abs(rect.x - targetX) + Math.abs(rect.y - targetY);
+                        if(dist < minDist){{ minDist = dist; found = el; }}
                     }}
                 }}
-
-                return {{success: false}};
+                if(found && minDist < 100){{
+                    found.scrollIntoView({{behavior: 'smooth', block: 'center'}});
+                    found.click();
+                    return {{success: true}};
+                }}
+                return {{success:  false}};
             """)
-
-            return result
-
-        except Exception as e:  
-            return {'success': False}
+            if result and result.get('success'):
+                log_callback("  ✓ 点击成功")
+                return True
+            return False
+        except Exception as e: 
+            log_callback(f"  ✗ 点击出错: {e}")
+            return False
 
     def place_bet(self, amount, log_callback):
+        """执行下注"""
         try:
+            log_callback(f"  执行下注，金额: {amount}")
             time.sleep(1)
-
-            input_result = self.driver.execute_script(f"""
-                var amount = {amount};
+            
+            result = self.driver.execute_script(f"""
                 var inputs = document.querySelectorAll('input');
-
-                for (var input of inputs) {{
-                    var visible = input.offsetWidth > 0 && input.offsetHeight > 0;
-                    if (visible && input.type !== 'hidden') {{
-                        input.value = '';
-                        input.focus();
-                        input.value = amount;
-                        input.dispatchEvent(new Event('input', {{bubbles: true}}));
-                        input.dispatchEvent(new Event('change', {{bubbles: true}}));
+                for(var i=0; i<inputs.length; i++){{
+                    var placeholder = inputs[i].placeholder || '';
+                    var id = inputs[i].id || '';
+                    if((placeholder. includes('金额') || id.includes('bet') || id.includes('gold')) && inputs[i].offsetWidth > 0){{
+                        inputs[i].value = '{amount}';
+                        inputs[i].dispatchEvent(new Event('input', {{bubbles: true}}));
                         return {{success: true}};
                     }}
                 }}
                 return {{success: false}};
             """)
-
-            if not input_result. get('success'):
-                log_callback(f"  ⚠ 输入金额失败")
+            
+            if not result or not result.get('success'):
+                log_callback("  ✗ 未找到金额输入框")
                 return False
-
-            log_callback(f"  ✓ 已输入金额:  {amount}")
+            
+            log_callback(f"  ✓ 输入金额: {amount}")
             time.sleep(0.5)
-
-            confirm_result = self.driver.execute_script("""
-                var buttons = document.querySelectorAll('button, div, span, a');
-
-                for (var btn of buttons) {
-                    var text = (btn.innerText || '').trim();
-                    var visible = btn.offsetWidth > 0 && btn.offsetHeight > 0;
-
-                    if (visible && (text === '下注' || text === '确认' || text === '确定' || text === '投注')) {
-                        btn.click();
-                        return {success: true, buttonText: text};
+            
+            bet_result = self.driver.execute_script("""
+                var buttons = document.querySelectorAll('button, div, span');
+                for(var i=0; i<buttons.length; i++){
+                    var text = buttons[i].textContent. trim();
+                    if((text === '下注' || text === '投注' || text === '确认下注') && buttons[i].offsetWidth > 0){
+                        buttons[i].click();
+                        return {success: true, text: text};
                     }
                 }
-                return {success: false};
+                return {success:  false};
             """)
-
-            if confirm_result.get('success'):
-                log_callback(f"  ✓ 已点击:  {confirm_result.get('buttonText')}")
+            
+            if bet_result and bet_result.get('success'):
+                log_callback(f"  ✓ 点击下注按钮")
+                time.sleep(1)
                 return True
-
+            
+            log_callback("  ✗ 未找到下注按钮")
             return False
-
-        except Exception as e: 
+        except Exception as e:
             log_callback(f"  ✗ 下注出错: {e}")
             return False
 
-    def check_and_auto_bet(self, log_callback):
-        if not self.auto_bet_enabled or not self.threshold_settings:
-            return False
+    def close_bet_panel(self, log_callback=None):
+        """关闭下注面板"""
+        try:
+            self.driver.execute_script("""
+                var closes = document.querySelectorAll('[class*="close"], button');
+                for(var i=0; i<closes.length; i++){
+                    var el = closes[i];
+                    if(el.offsetWidth > 0 && el.offsetWidth < 50){
+                        el.click();
+                        return;
+                    }
+                }
+            """)
+            time.sleep(0.5)
+        except: 
+            pass
 
-        global_threshold = self.threshold_settings.get('global', 0)
+    def auto_bet_check(self, log_callback):
+        """检查并自动下注"""
+        if not self.auto_bet_enabled:
+            return False
+        
+        threshold = self.odds_threshold
         
         for match in self.current_matches:
-            match_id = match.get('id')
-            team1 = match.get('team1', '')
-            team2 = match.get('team2', '')
-
-            for odds in match.get('allOdds', []):
-                odds_value = odds['value']
-                bet_type = odds. get('betType', '未知')
-                
-                type_threshold = self.threshold_settings.get(bet_type, global_threshold)
-                threshold = type_threshold if type_threshold > 0 else global_threshold
-                
-                if threshold > 0 and odds_value >= threshold:
-                    bet_key = f"{match_id}_{odds['text']}_{bet_type}_{datetime.now().strftime('%Y%m%d%H%M')}"
-
-                    if bet_key not in self.bet_history:
-                        log_callback(f"\n🎯 触发自动下注!")
-                        log_callback(f"   比赛: {team1} vs {team2}")
-                        log_callback(f"   盘口: {bet_type}")
-                        log_callback(f"   水位: {odds['text']} (阈值: {threshold})")
-                        log_callback(f"   盘口值: {odds. get('handicap', 'N/A')}")
-
-                        click_result = self.click_odds_element(odds['text'], odds['x'], odds['y'], log_callback)
-
-                        if click_result.get('success'):
+            team1, team2 = match. get('team1', ''), match.get('team2', '')
+            league = match.get('league', '')
+            
+            for bet_type, type_odds in match. get('odds', {}).items():
+                for odds in type_odds.get('home', []) + type_odds.get('away', []):
+                    if odds['value'] >= threshold and odds['value'] < 50:
+                        bet_key = f"{team1}_{team2}_{bet_type}_{odds['text']}_{datetime.now().strftime('%Y%m%d%H')}"
+                        
+                        if bet_key in self.bet_history:
+                            continue
+                        
+                        log_callback(f"\n🎯 触发自动下注!  {team1} vs {team2} | {bet_type} | {odds['text']}")
+                        
+                        if self.click_odds(odds['text'], odds['x'], odds['y'], log_callback):
+                            time.sleep(1)
                             if self.place_bet(self.bet_amount, log_callback):
                                 self.bet_history. append(bet_key)
-                                log_callback(f"  ✓✓ 下注成功!  金额: {self.bet_amount} RMB")
+                                log_callback(f"  ✓✓ 下注成功!")
+                                self.close_bet_panel()
                                 return True
-                            else:
-                                log_callback(f"  ⚠ 下注确认失败")
-                        else:
-                            log_callback(f"  ⚠ 点击水位失败")
-
+                            self.close_bet_panel()
         return False
 
     def monitor_realtime(self, interval, log_callback, update_callback):
-        log_callback(f"\n{'='*50}")
-        log_callback(f"🚀 开始实时监控水位")
-        log_callback(f"   刷新间隔: {interval} 秒")
-        log_callback(f"   自动下注: {'开启' if self.auto_bet_enabled else '关闭'}")
-        log_callback(f"   详细打印: {'开启' if self.enable_detailed_print else '关闭'}")
-        if self.threshold_settings:
-            log_callback(f"   水位阈值: {self. threshold_settings}")
-        log_callback(f"{'='*50}\n")
-
+        """实时监控"""
+        log_callback(f"\n🚀 开始监控 | 间隔:{interval}秒 | 阈值:{self.odds_threshold}\n")
+        
         while self.is_running:
-            try:  
+            try: 
                 data = self.get_all_odds_data()
-
                 if data:
                     update_callback(data)
-
                     matches = data.get('matches', [])
                     total_odds = data.get('totalOdds', 0)
-                    log_callback(f"[更新] {len(matches)} 场比赛, {total_odds} 个水位")
-
-                    if self. auto_bet_enabled: 
-                        self.check_and_auto_bet(log_callback)
-
+                    
+                    home_count = sum(len(od. get('home', [])) for m in matches for od in m.get('odds', {}).values())
+                    away_count = sum(len(od.get('away', [])) for m in matches for od in m.get('odds', {}).values())
+                    
+                    log_callback(f"[{datetime.now().strftime('%H:%M:%S')}] {len(matches)}场, {total_odds}水位 (主:{home_count} 客:{away_count})")
+                    
+                    if self.auto_bet_enabled:
+                        self.auto_bet_check(log_callback)
+                
                 time.sleep(interval)
-
             except Exception as e:
-                log_callback(f"✗ 监控错误: {str(e)}")
-                time. sleep(interval)
-
+                log_callback(f"✗ 监控错误: {e}")
+                time.sleep(interval)
+        
         log_callback("\n监控已停止")
 
     def stop(self):
+        """停止"""
         self.is_running = False
         if self.driver:
             try:
@@ -1297,747 +843,604 @@ class BettingBot:
             except:
                 pass
 
-# ================== GUI 类 ==================
+# ================== GUI类 ==================
 class BettingBotGUI:
+    """GUI界面"""
+    
     def __init__(self, root):
         self.root = root
-        self.root.title("滚球水位实时监控系统")
-        self.root.geometry("1900x1000")
+        self.root.title("滚球水位实时监控系统 v4.1")
+        self.root.geometry("1850x950")
         self.root.configure(bg='#1a1a2e')
-
+        
         self.bot = BettingBot()
         self.monitor_thread = None
-        self. threshold_entries = {}
-        self.last_update_time = None
-
+        
         self.create_widgets()
-
+        self.load_config()
+    
+    def load_config(self):
+        """加载配置"""
+        try:
+            if os.path.exists(CONFIG_FILE):
+                with open(CONFIG_FILE, 'r', encoding='utf-8') as f:
+                    config = json.load(f)
+                    self.bot.odds_threshold = config.get('threshold', 1.80)
+                    self.bot. bet_amount = config.get('bet_amount', 2)
+                    self.threshold_entry.delete(0, tk.END)
+                    self.threshold_entry.insert(0, str(self.bot.odds_threshold))
+                    self.amount_entry.delete(0, tk.END)
+                    self. amount_entry.insert(0, str(self.bot.bet_amount))
+        except:
+            pass
+    
+    def save_config(self):
+        """保存配置"""
+        try:
+            config = {
+                'threshold': self.bot.odds_threshold,
+                'bet_amount': self. bot.bet_amount,
+            }
+            with open(CONFIG_FILE, 'w', encoding='utf-8') as f:
+                json.dump(config, f, ensure_ascii=False, indent=2)
+        except:
+            pass
+    
     def create_widgets(self):
+        """创建界面"""
+        # 标题
         title_frame = tk.Frame(self.root, bg='#1a1a2e')
         title_frame.pack(fill='x', padx=20, pady=10)
-
-        tk.Label(title_frame, text="🎯 滚球水位实时监控系统", bg='#1a1a2e', fg='#00ff88',
-                font=('Microsoft YaHei UI', 20, 'bold')).pack()
-        tk.Label(title_frame, text="实时更新水位数据 - 显示所有水位值",
-                bg='#1a1a2e', fg='#888888', font=('Microsoft YaHei UI', 9)).pack()
-
-        main_container = tk.Frame(self.root, bg='#1a1a2e')
-        main_container.pack(fill='both', expand=True, padx=20, pady=10)
-
-        left_frame = tk.Frame(main_container, bg='#16213e', width=420)
+        
+        tk.Label(title_frame, text="🎯 滚球水位实时监控系统 v4.1", bg='#1a1a2e', fg='#00ff88',
+                font=('Microsoft YaHei UI', 22, 'bold')).pack()
+        tk.Label(title_frame, text="修复登录 | 修复球队识别 | 修复主客队水位 | 自动下注",
+                bg='#1a1a2e', fg='#888', font=('Microsoft YaHei UI', 10)).pack()
+        
+        # 主容器
+        main_frame = tk.Frame(self.root, bg='#1a1a2e')
+        main_frame.pack(fill='both', expand=True, padx=20, pady=10)
+        
+        # 左侧面板
+        left_frame = tk.Frame(main_frame, bg='#16213e', width=340)
         left_frame.pack(side='left', fill='y', padx=(0, 10))
         left_frame.pack_propagate(False)
-
+        
+        # 登录区域
         login_frame = tk.LabelFrame(left_frame, text="🔐 登录", bg='#16213e',
-                                   fg='#00ff88', font=('Microsoft YaHei UI', 11, 'bold'),
-                                   padx=10, pady=10)
+                                   fg='#00ff88', font=('Microsoft YaHei UI', 11, 'bold'), padx=10, pady=10)
         login_frame.pack(fill='x', padx=10, pady=(10, 5))
-
-        tk.Label(login_frame, text="用户名:", bg='#16213e', fg='#ffffff',
+        
+        tk.Label(login_frame, text="用户名:", bg='#16213e', fg='#fff',
                 font=('Microsoft YaHei UI', 10)).grid(row=0, column=0, sticky='w', pady=3)
-        self.username_entry = tk.Entry(login_frame, bg='#0f3460', fg='#ffffff',
-                                      font=('Consolas', 10), insertbackground='#ffffff',
-                                      relief='flat', width=28)
+        self.username_entry = tk.Entry(login_frame, bg='#0f3460', fg='#fff',
+                                      font=('Consolas', 10), insertbackground='#fff', relief='flat', width=22)
         self.username_entry.grid(row=0, column=1, pady=3, padx=(5, 0))
         self.username_entry.insert(0, USERNAME)
-
-        tk.Label(login_frame, text="密码:", bg='#16213e', fg='#ffffff',
+        
+        tk.Label(login_frame, text="密码:", bg='#16213e', fg='#fff',
                 font=('Microsoft YaHei UI', 10)).grid(row=1, column=0, sticky='w', pady=3)
-        self.password_entry = tk.Entry(login_frame, show="*", bg='#0f3460', fg='#ffffff',
-                                      font=('Consolas', 10), insertbackground='#ffffff',
-                                      relief='flat', width=28)
+        self.password_entry = tk.Entry(login_frame, show="*", bg='#0f3460', fg='#fff',
+                                      font=('Consolas', 10), insertbackground='#fff', relief='flat', width=22)
         self.password_entry.grid(row=1, column=1, pady=3, padx=(5, 0))
         self.password_entry.insert(0, PASSWORD)
-
-        self.login_btn = tk.Button(login_frame, text="登录", bg='#00ff88', fg='#000000',
+        
+        self.login_btn = tk.Button(login_frame, text="登录", bg='#00ff88', fg='#000',
                                   font=('Microsoft YaHei UI', 10, 'bold'), relief='flat',
-                                  command=self.login, cursor='hand2', padx=15, pady=3)
-        self.login_btn.grid(row=2, column=0, columnspan=2, pady=(8, 0))
-
+                                  command=self. login, cursor='hand2', padx=20, pady=3)
+        self.login_btn.grid(row=2, column=0, columnspan=2, pady=(10, 0))
+        
+        # 日志区域
         log_frame = tk.LabelFrame(left_frame, text="📋 日志", bg='#16213e',
-                                 fg='#888888', font=('Microsoft YaHei UI', 10, 'bold'),
-                                 padx=5, pady=5)
+                                 fg='#888', font=('Microsoft YaHei UI', 10, 'bold'), padx=5, pady=5)
         log_frame.pack(fill='both', expand=True, padx=10, pady=10)
-
+        
         self.log_text = scrolledtext.ScrolledText(log_frame, bg='#0f3460', fg='#00ff88',
-                                                 font=('Consolas', 8), relief='flat',
-                                                 height=25, wrap='word')
+                                                 font=('Consolas', 9), relief='flat', height=16, wrap='word')
         self.log_text.pack(fill='both', expand=True)
-
+        
+        # 下注设置
         self.bet_frame = tk.LabelFrame(left_frame, text="💰 下注设置", bg='#16213e',
-                                      fg='#ff9900', font=('Microsoft YaHei UI', 11, 'bold'),
-                                      padx=10, pady=10)
-
-        tk.Label(self.bet_frame, text="下注金额:", bg='#16213e', fg='#ffffff',
+                                      fg='#ff9900', font=('Microsoft YaHei UI', 11, 'bold'), padx=10, pady=10)
+        
+        tk.Label(self.bet_frame, text="下注金额:", bg='#16213e', fg='#fff',
                 font=('Microsoft YaHei UI', 10)).grid(row=0, column=0, sticky='w', pady=3)
         self.amount_entry = tk.Entry(self.bet_frame, bg='#0f3460', fg='#00ff88',
-                                    font=('Consolas', 11, 'bold'), insertbackground='#ffffff',
-                                    relief='flat', width=8)
+                                    font=('Consolas', 12, 'bold'), insertbackground='#fff', relief='flat', width=8)
         self.amount_entry.grid(row=0, column=1, pady=3, padx=(5, 0))
         self.amount_entry.insert(0, "2")
-        tk.Label(self.bet_frame, text="RMB", bg='#16213e', fg='#888888',
+        tk.Label(self.bet_frame, text="RMB", bg='#16213e', fg='#888',
                 font=('Microsoft YaHei UI', 9)).grid(row=0, column=2, padx=3)
-
-        tk.Label(self.bet_frame, text="刷新间隔:", bg='#16213e', fg='#ffffff',
+        
+        tk.Label(self.bet_frame, text="刷新间隔:", bg='#16213e', fg='#fff',
                 font=('Microsoft YaHei UI', 10)).grid(row=1, column=0, sticky='w', pady=3)
-        self.interval_entry = tk.Entry(self.bet_frame, bg='#0f3460', fg='#ffffff',
-                                      font=('Consolas', 11), insertbackground='#ffffff',
-                                      relief='flat', width=8)
+        self.interval_entry = tk.Entry(self.bet_frame, bg='#0f3460', fg='#fff',
+                                      font=('Consolas', 12), insertbackground='#fff', relief='flat', width=8)
         self.interval_entry.grid(row=1, column=1, pady=3, padx=(5, 0))
         self.interval_entry.insert(0, "3")
-        tk.Label(self.bet_frame, text="秒", bg='#16213e', fg='#888888',
+        tk.Label(self.bet_frame, text="秒", bg='#16213e', fg='#888',
                 font=('Microsoft YaHei UI', 9)).grid(row=1, column=2, padx=3)
-
-        tk.Label(self.bet_frame, text="水位阈值:", bg='#16213e', fg='#ffffff',
+        
+        tk.Label(self.bet_frame, text="水位阈值:", bg='#16213e', fg='#fff',
                 font=('Microsoft YaHei UI', 10)).grid(row=2, column=0, sticky='w', pady=3)
         self.threshold_entry = tk.Entry(self. bet_frame, bg='#0f3460', fg='#ffaa00',
-                                       font=('Consolas', 11), insertbackground='#ffffff',
-                                       relief='flat', width=8)
+                                       font=('Consolas', 12, 'bold'), insertbackground='#fff', relief='flat', width=8)
         self.threshold_entry.grid(row=2, column=1, pady=3, padx=(5, 0))
-        self.threshold_entry.insert(0, "1. 80")
-        tk.Label(self.bet_frame, text="触发", bg='#16213e', fg='#888888',
+        self.threshold_entry.insert(0, "1.80")
+        tk.Label(self.bet_frame, text="≥触发", bg='#16213e', fg='#888',
                 font=('Microsoft YaHei UI', 9)).grid(row=2, column=2, padx=3)
-
-        # 新增：详细打印选项
-        self.detailed_print_var = tk.BooleanVar(value=True)
-        self.detailed_print_check = tk.Checkbutton(self. bet_frame, text="控制台详细打印",
-                                                   variable=self.detailed_print_var,
-                                                   bg='#16213e', fg='#00ff88',
-                                                   selectcolor='#0f3460',
-                                                   activebackground='#16213e',
-                                                   font=('Microsoft YaHei UI', 9),
-                                                   command=self.toggle_detailed_print)
-        self.detailed_print_check.grid(row=3, column=0, columnspan=3, pady=(5, 0), sticky='w')
-
-        # 新增：保存到文件选项
-        self.save_file_var = tk.BooleanVar(value=False)
-        self.save_file_check = tk.Checkbutton(self.bet_frame, text="保存数据到文件",
-                                              variable=self.save_file_var,
-                                              bg='#16213e', fg='#00ff88',
-                                              selectcolor='#0f3460',
-                                              activebackground='#16213e',
-                                              font=('Microsoft YaHei UI', 9),
-                                              command=self.toggle_save_file)
-        self.save_file_check.grid(row=4, column=0, columnspan=3, pady=(2, 0), sticky='w')
-
+        
         self.auto_bet_var = tk.BooleanVar(value=False)
-        self.auto_bet_check = tk.Checkbutton(self.bet_frame, text="启用自动下注",
-                                            variable=self.auto_bet_var,
-                                            bg='#16213e', fg='#ff4444',
-                                            selectcolor='#0f3460',
-                                            activebackground='#16213e',
-                                            font=('Microsoft YaHei UI', 10, 'bold'),
-                                            command=self.toggle_auto_bet)
-        self.auto_bet_check.grid(row=5, column=0, columnspan=3, pady=(8, 0), sticky='w')
-
+        self.auto_bet_check = tk.Checkbutton(self.bet_frame, text="⚡ 启用自动下注",
+                                            variable=self.auto_bet_var, bg='#16213e', fg='#ff4444',
+                                            selectcolor='#0f3460', activebackground='#16213e',
+                                            font=('Microsoft YaHei UI', 11, 'bold'), command=self.toggle_auto_bet)
+        self.auto_bet_check.grid(row=3, column=0, columnspan=3, pady=(10, 0), sticky='w')
+        
+        # 控制按��
         self.control_frame = tk.Frame(left_frame, bg='#16213e')
-
+        
         self.start_btn = tk.Button(self.control_frame, text="🚀 开始监控", bg='#0088ff',
-                                   fg='#ffffff', font=('Microsoft YaHei UI', 11, 'bold'),
-                                   relief='flat', command=self.start_monitoring,
-                                   cursor='hand2', pady=8)
+                                  fg='#fff', font=('Microsoft YaHei UI', 12, 'bold'), relief='flat',
+                                  command=self.start_monitoring, cursor='hand2', pady=10)
         self.start_btn.pack(fill='x', pady=(0, 5))
-
+        
         self.stop_btn = tk.Button(self.control_frame, text="⏹ 停止监控", bg='#ff4444',
-                                  fg='#ffffff', font=('Microsoft YaHei UI', 11, 'bold'),
-                                  relief='flat', command=self.stop_monitoring,
-                                  cursor='hand2', pady=8, state='disabled')
+                                 fg='#fff', font=('Microsoft YaHei UI', 12, 'bold'), relief='flat',
+                                 command=self.stop_monitoring, cursor='hand2', pady=10, state='disabled')
         self.stop_btn.pack(fill='x', pady=(0, 5))
-
-        self.refresh_btn = tk.Button(self.control_frame, text="🔄 刷新水位", bg='#666666',
-                                    fg='#ffffff', font=('Microsoft YaHei UI', 10),
-                                    relief='flat', command=self.refresh_data,
-                                    cursor='hand2', pady=6)
+        
+        self.refresh_btn = tk.Button(self.control_frame, text="🔄 刷新数据", bg='#666',
+                                    fg='#fff', font=('Microsoft YaHei UI', 10), relief='flat',
+                                    command=self.refresh_data, cursor='hand2', pady=6)
         self.refresh_btn.pack(fill='x', pady=(0, 5))
-
-        self.diagnose_btn = tk.Button(self.control_frame, text="🔬 深度诊断", bg='#ff6600',
-                                     fg='#ffffff', font=('Microsoft YaHei UI', 10, 'bold'),
-                                     relief='flat', command=self. diagnose_page,
-                                     cursor='hand2', pady=6)
-        self.diagnose_btn.pack(fill='x', pady=(0, 5))
-
-        # 新增：打印当前水位按钮
-        self.print_odds_btn = tk.Button(self.control_frame, text="📊 打印详细水位", bg='#9900ff',
-                                        fg='#ffffff', font=('Microsoft YaHei UI', 10, 'bold'),
-                                        relief='flat', command=self. print_current_odds,
-                                        cursor='hand2', pady=6)
-        self.print_odds_btn.pack(fill='x', pady=(0, 5))
-
-        # 新增：导出JSON按钮
-        self.export_json_btn = tk.Button(self.control_frame, text="💾 导出JSON", bg='#006699',
-                                         fg='#ffffff', font=('Microsoft YaHei UI', 10),
-                                         relief='flat', command=self.export_to_json,
-                                         cursor='hand2', pady=6)
-        self.export_json_btn.pack(fill='x', pady=(0, 5))
-
-        self.right_frame = tk.Frame(main_container, bg='#16213e')
+        
+        self.diagnose_btn = tk.Button(self.control_frame, text="🔬 深度诊断", bg='#9933ff',
+                                     fg='#fff', font=('Microsoft YaHei UI', 10, 'bold'), relief='flat',
+                                     command=self. diagnose_page, cursor='hand2', pady=6)
+        self.diagnose_btn.pack(fill='x')
+        
+        # 右侧数据区域
+        self.right_frame = tk.Frame(main_frame, bg='#16213e')
         self.right_frame.pack(side='right', fill='both', expand=True)
-
+        
+        # 标题栏
         header_frame = tk.Frame(self.right_frame, bg='#16213e')
         header_frame.pack(fill='x', pady=(0, 5))
-
+        
         tk.Label(header_frame, text="📊 实时水位数据", bg='#16213e',
-                font=('Microsoft YaHei UI', 12, 'bold'), fg='#00ff88').pack(side='left')
-
-        self.update_status_label = tk.Label(header_frame, text="", bg='#16213e',
-                font=('Microsoft YaHei UI', 10), fg='#ffaa00')
-        self.update_status_label.pack(side='right', padx=10)
-
+                font=('Microsoft YaHei UI', 14, 'bold'), fg='#00ff88').pack(side='left')
+        
+        self.update_label = tk.Label(header_frame, text="", bg='#16213e',
+                                    font=('Microsoft YaHei UI', 10), fg='#ffaa00')
+        self.update_label.pack(side='right', padx=10)
+        
+        # 提示
         self.hint_label = tk.Label(self.right_frame,
-                                  text="请先登录\n\n登录后将显示所有滚球比赛的水位数据\n\n水位数据将实时更新到此区域",
-                                  bg='#16213e', fg='#888888',
-                                  font=('Microsoft YaHei UI', 11), justify='center')
-        self.hint_label.pack(pady=80)
-
+                                  text="请先登录\n\n登录后将显示所有滚球比赛的水位数据\n\n点击「深度诊断」可分析页面结构",
+                                  bg='#16213e', fg='#888', font=('Microsoft YaHei UI', 12), justify='center')
+        self.hint_label.pack(pady=100)
+        
         self.odds_canvas = None
         self.odds_inner_frame = None
-
+        
+        # 状态栏
         status_frame = tk.Frame(self.root, bg='#0f3460', height=30)
         status_frame.pack(side='bottom', fill='x')
-
+        
         self.status_label = tk.Label(status_frame, text="状态: 未登录", bg='#0f3460',
-                                    fg='#888888', font=('Microsoft YaHei UI', 10),
-                                    anchor='w', padx=20)
+                                    fg='#888', font=('Microsoft YaHei UI', 10), anchor='w', padx=20)
         self.status_label.pack(side='left', fill='y')
-
+        
         self.time_label = tk.Label(status_frame, text="", bg='#0f3460',
-                                  fg='#00ff88', font=('Microsoft YaHei UI', 10),
-                                  anchor='e', padx=20)
+                                  fg='#00ff88', font=('Microsoft YaHei UI', 10), anchor='e', padx=20)
         self.time_label.pack(side='right', fill='y')
-
-    def toggle_detailed_print(self):
-        """切换详细打印选项"""
-        self.bot.enable_detailed_print = self.detailed_print_var.get()
-        status = "开启" if self.bot.enable_detailed_print else "关闭"
-        self. log(f"控制台详细打印已{status}")
-
-    def toggle_save_file(self):
-        """切换保存文件选项"""
-        self.bot.save_to_file = self.save_file_var.get()
-        status = "开启" if self. bot.save_to_file else "关闭"
-        self.log(f"保存数据到文件已{status}")
-
-    def print_current_odds(self):
-        """打印当前水位数据到控制台"""
-        if not self.bot.driver:
-            messagebox.showerror("错误", "请先登录")
-            return
-
-        def print_thread():
-            self.log("正在获取并打印详细水位数据...")
-            try:
-                data = self.bot.get_all_odds_data()
-                if data: 
-                    # 强制打印到控制台
-                    output = print_detailed_odds_data(data, print_to_console=True)
-                    self.log("✓ 详细水位数据已打印到控制台")
-                    self.log(f"  比赛数:  {len(data. get('matches', []))}")
-                    self.log(f"  水位数: {data. get('totalOdds', 0)}")
-                else:
-                    self.log("❌ 未获取到数据")
-            except Exception as e:
-                self.log(f"打印失败: {e}")
-
-        threading.Thread(target=print_thread, daemon=True).start()
-
-    def export_to_json(self):
-        """导出水位数据到JSON文件"""
-        if not self.bot.driver:
-            messagebox.showerror("错误", "请先登录")
-            return
-
-        def export_thread():
-            self.log("正在导出水位数据到JSON...")
-            try:
-                data = self.bot.get_all_odds_data()
-                if data:
-                    filename = export_odds_to_json(data)
-                    self.log(f"✓ 数据已导出到:  {filename}")
-                else:
-                    self.log("❌ 未获取到数据")
-            except Exception as e:
-                self.log(f"导出失败: {e}")
-
-        threading.Thread(target=export_thread, daemon=True).start()
-
+    
     def create_odds_display_area(self, parent):
-        if self.hint_label:
-            self.hint_label.pack_forget()
-
+        """创建水位显示区域"""
+        if self.hint_label: 
+            self.hint_label. pack_forget()
+        
         if self.odds_canvas:
-            self.odds_canvas.master.destroy()
-
+            self.odds_canvas. master.destroy()
+        
         canvas_frame = tk.Frame(parent, bg='#16213e')
         canvas_frame.pack(fill='both', expand=True)
-
+        
         self.odds_canvas = tk.Canvas(canvas_frame, bg='#0f3460', highlightthickness=0)
-        scrollbar_y = tk.Scrollbar(canvas_frame, orient='vertical', command=self.odds_canvas. yview)
+        scrollbar_y = tk.Scrollbar(canvas_frame, orient='vertical', command=self.odds_canvas.yview)
         scrollbar_x = tk.Scrollbar(canvas_frame, orient='horizontal', command=self.odds_canvas.xview)
-
-        self.odds_inner_frame = tk.Frame(self.odds_canvas, bg='#0f3460')
-
+        
+        self. odds_inner_frame = tk.Frame(self.odds_canvas, bg='#0f3460')
+        
         self.odds_canvas.configure(yscrollcommand=scrollbar_y.set, xscrollcommand=scrollbar_x.set)
-
+        
         scrollbar_y.pack(side='right', fill='y')
         scrollbar_x.pack(side='bottom', fill='x')
         self.odds_canvas.pack(side='left', fill='both', expand=True)
-
+        
         self.canvas_window = self.odds_canvas.create_window((0, 0), window=self.odds_inner_frame, anchor='nw')
-
-        self.odds_inner_frame.bind('<Configure>', lambda e: self.odds_canvas.configure(scrollregion=self.odds_canvas.bbox('all')))
+        
+        self.odds_inner_frame.bind('<Configure>', lambda e: self.odds_canvas. configure(scrollregion=self. odds_canvas.bbox('all')))
         self.odds_canvas.bind('<Configure>', lambda e: self.odds_canvas.itemconfig(self.canvas_window, width=e.width))
         self.odds_canvas.bind_all('<MouseWheel>', lambda e: self.odds_canvas.yview_scroll(int(-1*(e.delta/120)), 'units'))
-
+    
     def update_odds_display(self, data):
+        """更新水位显示"""
         def update():
             try:
                 if not self.odds_inner_frame:
                     self.create_odds_display_area(self.right_frame)
-
+                
                 matches = data.get('matches', [])
                 total_odds = data.get('totalOdds', 0)
-                raw_elements = data.get('rawElements', 0)
-                debug = data.get('debug', {})
                 timestamp = datetime.now().strftime('%H:%M:%S')
-
+                
                 self.time_label.config(text=f"最后更新: {timestamp}")
-                self.update_status_label.config(text=f"🔄 {timestamp}", fg='#00ff88')
-                self.last_update_time = timestamp
-
-                for widget in self.odds_inner_frame.winfo_children():
-                    widget.destroy()
-
-                debug_text = f"扫描={debug.get('totalScanned', 0)}, 原始={raw_elements}, 水位={total_odds}"
-                tk.Label(self.odds_inner_frame, text=debug_text,
-                        bg='#0f3460', fg='#666666', font=('Consolas', 8)).pack(anchor='w', padx=10, pady=2)
-
+                self.update_label.config(text=f"🔄 {timestamp}", fg='#00ff88')
+                
+                # 清除旧内容
+                for widget in self. odds_inner_frame.winfo_children():
+                    widget. destroy()
+                
                 if not matches:
-                    tk.Label(self.odds_inner_frame,
-                            text="暂无比赛数据，请点击「深度诊断」查看详情",
-                            bg='#0f3460', fg='#888888', font=('Microsoft YaHei UI', 11)).pack(pady=20)
+                    tk.Label(self.odds_inner_frame, text="暂无比赛数据，请点击「深度诊断」查看详情",
+                            bg='#0f3460', fg='#888', font=('Microsoft YaHei UI', 11)).pack(pady=20)
                     return
-
-                total_team1 = sum(len(m.get('team1Odds', [])) for m in matches)
-                total_team2 = sum(len(m.get('team2Odds', [])) for m in matches)
+                
+                # 统计
+                home_total = sum(len(od. get('home', [])) for m in matches for od in m.get('odds', {}).values())
+                away_total = sum(len(od.get('away', [])) for m in matches for od in m.get('odds', {}).values())
+                
                 tk.Label(self.odds_inner_frame,
-                        text=f"共 {len(matches)} 场比赛，{total_odds} 个水位 (主队:{total_team1} 客队:{total_team2})",
-                        bg='#0f3460', fg='#00ff88', font=('Microsoft YaHei UI', 10, 'bold')).pack(anchor='w', padx=10, pady=5)
-
+                        text=f"共 {len(matches)} 场比赛，{total_odds} 个水位 (主队:{home_total} 客队:{away_total})  |  阈值:  {self.bot. odds_threshold}",
+                        bg='#0f3460', fg='#00ff88', font=('Microsoft YaHei UI', 11, 'bold')).pack(anchor='w', padx=10, pady=5)
+                
                 current_league = ''
-
-                bet_type_order = ['让球', '大/小', '独赢', '下个进球', '双方球队进球', '单/双', '队伍1进球', '队伍2进球',
-                                  '让球上半场', '大/小上半场', '独赢上半场']
-
-                global_threshold = self.bot.threshold_settings.get('global', 0)
-
+                threshold = self.bot.odds_threshold
+                display_bet_types = BET_TYPES_ORDER[: 8]
+                
                 for match in matches:
-                    match_id = match.get('id')
-                    league = match.get('league', '')
-                    team1 = match.get('team1', '未知')
-                    team2 = match.get('team2', '未知')
-                    score1 = match.get('team1Score', '')
-                    score2 = match.get('team2Score', '')
-                    time_str = match.get('time', '')
-                    odds_data = match.get('oddsData', {})
-                    all_odds = match.get('allOdds', [])
-
+                    league = match.get('league', '未知联赛')
+                    team1 = match.get('team1', '主队')
+                    team2 = match.get('team2', '客队')
+                    score1 = match.get('score1', '0')
+                    score2 = match.get('score2', '0')
+                    match_time = match.get('time', '')
+                    odds = match.get('odds', {})
+                    
+                    # 联赛标题
                     if league and league != current_league:
-                        league_frame = tk.Frame(self.odds_inner_frame, bg='#1a1a2e')
+                        league_frame = tk.Frame(self.odds_inner_frame, bg='#2d2d44')
                         league_frame.pack(fill='x', pady=(15, 5), padx=5)
-
-                        tk.Label(league_frame, text=f"🏆 {league}", bg='#1a1a2e', fg='#ffaa00',
-                                font=('Microsoft YaHei UI', 11, 'bold')).pack(anchor='w')
+                        tk.Label(league_frame, text=f"🏆 {league}", bg='#2d2d44', fg='#ffaa00',
+                                font=('Microsoft YaHei UI', 12, 'bold'), pady=5).pack(anchor='w', padx=10)
                         current_league = league
-
-                    match_title = f"⚽ {score1} {team1} vs {team2} {score2}"
-                    if time_str:
-                        match_title += f"  [{time_str}]"
-
-                    match_frame = tk.LabelFrame(self.odds_inner_frame, text=match_title,
-                                               bg='#16213e', fg='#00ff88',
-                                               font=('Microsoft YaHei UI', 10, 'bold'),
-                                               padx=10, pady=8)
-                    match_frame. pack(fill='x', padx=5, pady=5)
-
-                    header_row = tk.Frame(match_frame, bg='#0a1628')
-                    header_row. pack(fill='x', pady=(0, 5))
-
-                    headers = ['盘口类型', '盘口值', '主队/是/单', '客队/否/双', '和/无']
-                    col_widths = [10, 8, 18, 18, 10]
-                    for i, (header, width) in enumerate(zip(headers, col_widths)):
-                        tk.Label(header_row, text=header, bg='#0a1628', fg='#888888',
-                                font=('Microsoft YaHei UI', 8), width=width, anchor='center').pack(side='left', padx=2)
-
-                    for bet_type in bet_type_order:
-                        if bet_type not in odds_data:
-                            continue
-
-                        type_data = odds_data[bet_type]
-
-                        has_data = False
-                        if bet_type in ['独赢', '独赢上半场', '下个进球']: 
-                            has_data = type_data.get('team1') or type_data.get('team2') or type_data.get('draw') or type_data.get('none')
-                        elif bet_type == '双方球队进球':
-                            has_data = type_data.get('yes') or type_data.get('no')
-                        elif bet_type == '单/双':
-                            has_data = type_data.get('odd') or type_data.get('even')
+                    
+                    # 比赛容器
+                    match_frame = tk.Frame(self.odds_inner_frame, bg='#1e1e32', bd=1, relief='solid')
+                    match_frame. pack(fill='x', padx=5, pady=3)
+                    
+                    # 表头行
+                    info_frame = tk.Frame(match_frame, bg='#1e1e32')
+                    info_frame.pack(fill='x', pady=(5, 2), padx=5)
+                    
+                    tk.Label(info_frame, text=f"⏱ {match_time}", bg='#1e1e32', fg='#888',
+                            font=('Microsoft YaHei UI', 9), width=18, anchor='w').pack(side='left')
+                    
+                    for bt in display_bet_types: 
+                        tk.Label(info_frame, text=bt, bg='#1e1e32', fg='#aaa',
+                                font=('Microsoft YaHei UI', 8), width=10, anchor='center').pack(side='left', padx=1)
+                    
+                    # 主队行
+                    team1_frame = tk.Frame(match_frame, bg='#1e1e32')
+                    team1_frame.pack(fill='x', pady=2, padx=5)
+                    
+                    score_color = '#ff4444' if score1 and score1. isdigit() and int(score1) > 0 else '#fff'
+                    tk.Label(team1_frame, text=score1 or '0', bg='#1e1e32', fg=score_color,
+                            font=('Microsoft YaHei UI', 11, 'bold'), width=3).pack(side='left')
+                    tk.Label(team1_frame, text=team1[: 14], bg='#1e1e32', fg='#fff',
+                            font=('Microsoft YaHei UI', 10), width=14, anchor='w').pack(side='left')
+                    
+                    for bt in display_bet_types: 
+                        cell_frame = tk.Frame(team1_frame, bg='#1e1e32', width=80)
+                        cell_frame. pack(side='left', padx=1)
+                        cell_frame.pack_propagate(False)
+                        
+                        type_odds = odds.get(bt, {})
+                        home_odds = type_odds.get('home', [])
+                        handicap = type_odds.get('handicap', '')
+                        
+                        cell_inner = tk.Frame(cell_frame, bg='#1e1e32')
+                        cell_inner.pack(expand=True)
+                        
+                        if handicap:
+                            tk.Label(cell_inner, text=handicap, bg='#1e1e32', fg='#666',
+                                    font=('Consolas', 7)).pack()
+                        
+                        if home_odds:
+                            val = home_odds[0]['value']
+                            text = home_odds[0]['text']
+                            color = '#ff4444' if val >= threshold else '#00ff88'
+                            tk.Label(cell_inner, text=text, bg='#1e1e32', fg=color,
+                                    font=('Consolas', 10, 'bold')).pack()
                         else:
-                            has_data = type_data.get('team1') or type_data.get('team2')
-
-                        if not has_data:
-                            continue
-
-                        data_row = tk.Frame(match_frame, bg='#0f3460')
-                        data_row.pack(fill='x', pady=2)
-
-                        tk.Label(data_row, text=bet_type, bg='#0f3460', fg='#ffffff',
-                                font=('Microsoft YaHei UI', 9), width=10, anchor='w').pack(side='left', padx=2)
-
-                        handicap_text = ''
-                        for key in ['team1', 'team2', 'yes', 'odd']: 
-                            if type_data.get(key) and len(type_data[key]) > 0 and type_data[key][0]. get('handicap'):
-                                handicap_text = type_data[key][0]. get('handicap', '')
-                                break
-
-                        tk.Label(data_row, text=handicap_text, bg='#0f3460', fg='#aaaaaa',
-                                font=('Consolas', 9), width=8, anchor='center').pack(side='left', padx=2)
-
-                        if bet_type in ['独赢', '独赢上半场']:
-                            for key in ['team1', 'team2', 'draw']: 
-                                odds_list = type_data.get(key, [])
-                                if odds_list:
-                                    odds_str = ', '.join([self._format_odds_with_threshold(o, global_threshold) for o in odds_list[: 3]])
-                                else:
-                                    odds_str = '-'
-                                width = 10 if key == 'draw' else 18
-                                fg_color = self._get_odds_color(odds_list, global_threshold)
-                                tk.Label(data_row, text=odds_str, bg='#0f3460', fg=fg_color,
-                                        font=('Consolas', 9, 'bold'), width=width, anchor='center').pack(side='left', padx=2)
-
-                        elif bet_type == '下个进球':
-                            for key in ['team1', 'team2', 'none']:
-                                odds_list = type_data.get(key, [])
-                                if odds_list:
-                                    odds_str = ', '.join([self._format_odds_with_threshold(o, global_threshold) for o in odds_list[: 3]])
-                                else: 
-                                    odds_str = '-'
-                                width = 10 if key == 'none' else 18
-                                fg_color = self._get_odds_color(odds_list, global_threshold)
-                                tk.Label(data_row, text=odds_str, bg='#0f3460', fg=fg_color,
-                                        font=('Consolas', 9, 'bold'), width=width, anchor='center').pack(side='left', padx=2)
-
-                        elif bet_type == '双方球队进球':
-                            for key in ['yes', 'no']:
-                                odds_list = type_data. get(key, [])
-                                if odds_list:
-                                    odds_str = ', '. join([self._format_odds_with_threshold(o, global_threshold) for o in odds_list[:3]])
-                                else: 
-                                    odds_str = '-'
-                                fg_color = self._get_odds_color(odds_list, global_threshold)
-                                tk. Label(data_row, text=odds_str, bg='#0f3460', fg=fg_color,
-                                        font=('Consolas', 9, 'bold'), width=18, anchor='center').pack(side='left', padx=2)
-                            tk.Label(data_row, text='', bg='#0f3460', width=10).pack(side='left', padx=2)
-
-                        elif bet_type == '单/双':
-                            for key in ['odd', 'even']: 
-                                odds_list = type_data.get(key, [])
-                                if odds_list:
-                                    odds_str = ', '.join([self._format_odds_with_threshold(o, global_threshold) for o in odds_list[:3]])
-                                else:
-                                    odds_str = '-'
-                                fg_color = self._get_odds_color(odds_list, global_threshold)
-                                tk.Label(data_row, text=odds_str, bg='#0f3460', fg=fg_color,
-                                        font=('Consolas', 9, 'bold'), width=18, anchor='center').pack(side='left', padx=2)
-                            tk.Label(data_row, text='', bg='#0f3460', width=10).pack(side='left', padx=2)
-
+                            tk.Label(cell_inner, text="-", bg='#1e1e32', fg='#444',
+                                    font=('Consolas', 10)).pack()
+                    
+                    # 客队行
+                    team2_frame = tk.Frame(match_frame, bg='#1e1e32')
+                    team2_frame.pack(fill='x', pady=(0, 5), padx=5)
+                    
+                    score_color = '#ff4444' if score2 and score2.isdigit() and int(score2) > 0 else '#fff'
+                    tk.Label(team2_frame, text=score2 or '0', bg='#1e1e32', fg=score_color,
+                            font=('Microsoft YaHei UI', 11, 'bold'), width=3).pack(side='left')
+                    tk.Label(team2_frame, text=team2[:14], bg='#1e1e32', fg='#fff',
+                            font=('Microsoft YaHei UI', 10), width=14, anchor='w').pack(side='left')
+                    
+                    for bt in display_bet_types: 
+                        cell_frame = tk.Frame(team2_frame, bg='#1e1e32', width=80)
+                        cell_frame. pack(side='left', padx=1)
+                        cell_frame.pack_propagate(False)
+                        
+                        type_odds = odds.get(bt, {})
+                        away_odds = type_odds.get('away', [])
+                        
+                        cell_inner = tk. Frame(cell_frame, bg='#1e1e32')
+                        cell_inner.pack(expand=True)
+                        
+                        tk.Label(cell_inner, text="", bg='#1e1e32', font=('Consolas', 7)).pack()
+                        
+                        if away_odds:
+                            val = away_odds[0]['value']
+                            text = away_odds[0]['text']
+                            color = '#ff4444' if val >= threshold else '#ffaa00'
+                            tk. Label(cell_inner, text=text, bg='#1e1e32', fg=color,
+                                    font=('Consolas', 10, 'bold')).pack()
                         else:
-                            for key in ['team1', 'team2']:
-                                odds_list = type_data.get(key, [])
-                                if odds_list:
-                                    odds_str = ', '.join([self._format_odds_with_threshold(o, global_threshold) for o in odds_list[:3]])
-                                else:
-                                    odds_str = '-'
-                                fg_color = self._get_odds_color(odds_list, global_threshold)
-                                tk.Label(data_row, text=odds_str, bg='#0f3460', fg=fg_color,
-                                        font=('Consolas', 9, 'bold'), width=18, anchor='center').pack(side='left', padx=2)
-                            tk.Label(data_row, text='', bg='#0f3460', width=10).pack(side='left', padx=2)
-
+                            tk.Label(cell_inner, text="-", bg='#1e1e32', fg='#444',
+                                    font=('Consolas', 10)).pack()
+                
                 self.odds_inner_frame.update_idletasks()
-                self. odds_canvas.configure(scrollregion=self.odds_canvas. bbox('all'))
-
-            except Exception as e:
+                self. odds_canvas.configure(scrollregion=self.odds_canvas.bbox('all'))
+                
+            except Exception as e: 
                 print(f"更新显示出错: {e}")
                 import traceback
                 traceback.print_exc()
-
+        
         self.root.after(0, update)
-
-    def _format_odds_with_threshold(self, odds_obj, threshold):
-        value = odds_obj.get('value', 0)
-        text = odds_obj.get('text', str(value))
-        if threshold > 0 and value >= threshold:
-            return f"★{text}"
-        return text
-
-    def _get_odds_color(self, odds_list, threshold):
-        if not odds_list:
-            return '#888888'
-        for o in odds_list:
-            if threshold > 0 and o.get('value', 0) >= threshold:
-                return '#ff4444'
-        return '#00ff88'
-
+    
     def log(self, message):
+        """写日志"""
         def update_log():
             timestamp = datetime.now().strftime('%H:%M:%S')
             self.log_text.insert('end', f"[{timestamp}] {message}\n")
             self.log_text.see('end')
             lines = int(self.log_text.index('end-1c').split('.')[0])
             if lines > 500:
-                self.log_text.delete('1.0', '100.0')
-
+                self.log_text.delete('1.0', '200.0')
         self.root.after(0, update_log)
-
+    
     def toggle_auto_bet(self):
+        """切换自动下注"""
         if self.auto_bet_var.get():
-            if messagebox.askyesno("确认", "确定启用自动下注吗？\n\n水位达到阈值时将自动下注！"):
+            result = messagebox.askyesno("确认启用自动下注",
+                f"确定启用自动下注吗？\n\n水位 ≥ {self.threshold_entry.get()} 时将自动下注\n下注金额:  {self.amount_entry.get()} RMB\n\n请确保账户余额充足！")
+            if result:
                 self.bot.auto_bet_enabled = True
-                try:
-                    threshold = float(self.threshold_entry.get())
-                    self. bot.threshold_settings['global'] = threshold
-                except: 
-                    pass
-                self. log("⚠️ 自动下注已启用！")
-                self.log(f"   水位阈值: {self. bot.threshold_settings. get('global', 0)}")
+                self.bot.odds_threshold = float(self.threshold_entry.get())
+                self.bot.bet_amount = float(self.amount_entry.get())
+                self.save_config()
+                self.log("⚡ 自动下注已启用!")
             else:
                 self.auto_bet_var.set(False)
         else:
             self.bot.auto_bet_enabled = False
             self.log("自动下注已关闭")
-
+    
     def login(self):
+        """登录"""
         username = self.username_entry.get()
         password = self.password_entry.get()
-
-        if not username or not password: 
+        
+        if not username or not password:
             messagebox.showerror("错误", "请输入用户名和密码")
             return
-
+        
         self.login_btn.config(state='disabled', text="登录中...")
-        self.status_label.config(text="状态: 正在登录.. .", fg='#ffaa00')
-
+        self.status_label.config(text="状态: 登录中.. .", fg='#ffaa00')
+        
         def login_thread():
             try:
                 self.bot.setup_driver(headless=False)
                 success = self.bot.login(username, password, self.log)
-
+                
                 def update_ui():
                     if success: 
                         self.status_label. config(text="状态: 已登录", fg='#00ff88')
                         self.login_btn.config(text="✓ 已登录", state='disabled')
-
                         self.bet_frame.pack(fill='x', padx=10, pady=5)
                         self.control_frame.pack(fill='x', padx=10, pady=10)
-
                         self.create_odds_display_area(self.right_frame)
-
                         self.refresh_data()
                     else:
                         self.status_label.config(text="状态: 登录失败", fg='#ff4444')
-                        self.login_btn. config(state='normal', text="登录")
-
+                        self. login_btn.config(state='normal', text="登录")
+                
                 self.root.after(0, update_ui)
-
             except Exception as e:
-                self.log(f"登录异常: {str(e)}")
+                self.log(f"登录异常: {e}")
                 def update_ui():
                     self.status_label.config(text="状态: 登录失败", fg='#ff4444')
                     self.login_btn.config(state='normal', text="登录")
                 self.root.after(0, update_ui)
-
+        
         threading.Thread(target=login_thread, daemon=True).start()
-
+    
     def start_monitoring(self):
+        """开始监控"""
         try:
             interval = float(self.interval_entry.get())
             amount = float(self.amount_entry.get())
+            threshold = float(self.threshold_entry.get())
         except ValueError:
-            messagebox.showerror("错误", "请输入有效的数字")
+            messagebox. showerror("错误", "请输入有效数字")
             return
-
+        
         if interval < 1:
             messagebox.showwarning("警告", "刷新间隔不能小于1秒")
             return
-
-        try:
-            threshold = float(self.threshold_entry.get())
-            self.bot.threshold_settings['global'] = threshold
-            self.log(f"水位阈值设置为: {threshold}")
-        except: 
-            pass
-
-        self.bot.bet_amount = amount
-        self.bot. auto_bet_enabled = self.auto_bet_var.get()
+        
+        self. bot.bet_amount = amount
+        self. bot.odds_threshold = threshold
+        self.bot.auto_bet_enabled = self.auto_bet_var.get()
         self.bot.is_running = True
-
+        self.save_config()
+        
         self.start_btn.config(state='disabled')
         self.stop_btn.config(state='normal')
         self.status_label.config(text="状态:  监控中.. .", fg='#00ff88')
-        self.update_status_label. config(text="🔄 监控中.. .", fg='#00ff88')
-
-        self.log(f"🚀 开始监控，刷新间隔: {interval}秒")
-        if self.bot.auto_bet_enabled:
-            self.log(f"⚠️ 自动下注已开启，阈值: {self.bot.threshold_settings.get('global', 0)}")
-
+        
+        self.log(f"🚀 开始监控 | 间隔:{interval}秒 | 阈值:{threshold} | 金额:{amount}")
+        
         self.monitor_thread = threading.Thread(
             target=self.bot.monitor_realtime,
             args=(interval, self.log, self.update_odds_display),
             daemon=True
         )
         self.monitor_thread.start()
-
+    
     def stop_monitoring(self):
-        self.bot.is_running = False
+        """停止监控"""
+        self.bot. is_running = False
         self.start_btn.config(state='normal')
         self.stop_btn.config(state='disabled')
-        self.status_label.config(text="状态: 已停止", fg='#ffaa00')
-        self.update_status_label.config(text="⏹ 已停止", fg='#ffaa00')
+        self.status_label.config(text="状态:  已停止", fg='#ffaa00')
+        self.update_label.config(text="⏹ 已停止", fg='#ffaa00')
         self.log("监控已停止")
-
-    def diagnose_page(self):
-        if not self.bot.driver:
-            messagebox.showerror("错误", "请先登录")
-            return
-
-        def diagnose_thread():
-            self.log("\n" + "="*50)
-            self.log("🔬 开始深度诊断...")
-            self.log("="*50)
-
+    
+    def refresh_data(self):
+        """手动刷新数据"""
+        def refresh_thread():
+            self.log("正在刷新数据...")
+            
+            def update_status():
+                self.update_label.config(text="🔄 刷新中.. .", fg='#ffaa00')
+            self.root.after(0, update_status)
+            
             try:
                 self.bot.wait_for_matches_to_load(self.log)
-
-                self.bot.decode_tahoma2_font(self.log)
-
-                self.bot.find_match_container(self.log)
-
-                self.bot.get_raw_elements(self.log)
-
-                self.log("\n📊 解析比赛数据...")
                 data = self.bot.get_all_odds_data()
-
+                
                 if data:
                     matches = data.get('matches', [])
                     total_odds = data.get('totalOdds', 0)
-                    debug = data.get('debug', {})
-
-                    self.log(f"\n📋 详细数据:")
-                    self.log(f"  检测到比赛: {debug.get('matchesDetected', 0)}")
-                    self.log(f"  解析比赛数:  {len(matches)}")
-                    self.log(f"  总水位数: {total_odds}")
-                    self.log(f"  识别球队名:  {debug.get('teamNamesFound', 0)}")
-                    self. log(f"  识别水位: {debug.get('oddsFound', 0)}")
-
-                    self.log(f"\n📐 使用的布局配置:")
-                    for bet_type, (x_start, x_end) in LAYOUT_CONFIG.items():
-                        self.log(f"    {bet_type}: X={x_start}-{x_end}")
-
-                    for i, match in enumerate(matches, 1):
-                        self. log(f"\n  比赛 {i}:  {match.get('team1', '未知')} vs {match.get('team2', '未知')}")
-                        self.log(f"    时间: {match.get('time', '')}")
-                        self.log(f"    联赛: {match.get('league', '')}")
-
-                        odds_data = match.get('oddsData', {})
-                        for bet_type, type_data in odds_data.items():
-                            has_data = False
-                            for key, values in type_data.items():
-                                if values:
-                                    has_data = True
-                                    break
-
-                            if has_data: 
-                                self.log(f"    [{bet_type}]:")
-                                for key, values in type_data.items():
-                                    if values:
-                                        odds_str = ', '.join([f"{o['text']}(x={o['x']},y={o['y']})" for o in values[:5]])
-                                        self.log(f"      {key}: {odds_str}")
-
+                    
+                    home_count = sum(len(od.get('home', [])) for m in matches for od in m. get('odds', {}).values())
+                    away_count = sum(len(od.get('away', [])) for m in matches for od in m.get('odds', {}).values())
+                    
                     self.update_odds_display(data)
-
-                self.log("\n" + "="*50)
-                self.log("诊断完成！")
-                self.log("="*50)
-
-            except Exception as e: 
-                self.log(f"\n诊断出错: {str(e)}")
-                import traceback
-                self.log(traceback.format_exc())
-
-        threading.Thread(target=diagnose_thread, daemon=True).start()
-
-    def refresh_data(self):
-        def refresh_thread():
-            self.log("正在获取水位数据...")
-
-            def update_status():
-                self.update_status_label.config(text="🔄 刷新中.. .", fg='#ffaa00')
-            self.root.after(0, update_status)
-
-            try:
-                self.bot.wait_for_matches_to_load(self.log)
-
-                data = self.bot.get_all_odds_data()
-
-                if data:
-                    matches = data.get('matches', [])
-                    total_odds = data. get('totalOdds', 0)
-                    debug = data.get('debug', {})
-
-                    self.update_odds_display(data)
-
-                    total_team1 = sum(len(m.get('team1Odds', [])) for m in matches)
-                    total_team2 = sum(len(m. get('team2Odds', [])) for m in matches)
-
-                    self.log(f"\n✓ 获取到 {len(matches)} 场比赛, {total_odds} 个水位")
-                    self. log(f"  主队水位: {total_team1}, 客队水位: {total_team2}")
-
-                    threshold = self.bot.threshold_settings.get('global', 0)
-
-                    for match in matches:
-                        team1 = match.get('team1', '未知')
-                        team2 = match.get('team2', '未知')
-                        odds_data = match.get('oddsData', {})
-
-                        high_odds = []
-                        for bet_type, type_data in odds_data.items():
-                            for key, values in type_data. items():
-                                for o in values: 
-                                    if threshold > 0 and o['value'] >= threshold:
-                                        high_odds.append(f"{bet_type}-{key}: {o['text']}")
-
-                        if high_odds:
-                            self.log(f"\n  ⚠️ {team1} vs {team2}:")
-                            self.log(f"    高水位: {', '.join(high_odds)}")
-
-                    if total_odds == 0:
-                        self. log("\n⚠️ 未获取到水位数据，点击「深度诊断」查看原因")
+                    self.log(f"✓ 获取 {len(matches)} 场比赛, {total_odds} 水位 (主:{home_count} 客:{away_count})")
+                    
+                    for match in matches[: 3]: 
+                        self.log(f"  {match. get('score1', '0')} {match.get('team1', '? ')} vs {match.get('team2', '?')} {match.get('score2', '0')}")
                 else:
                     self.log("❌ 未获取到数据")
-
             except Exception as e:
                 self.log(f"刷新失败: {e}")
                 import traceback
                 self.log(traceback.format_exc())
-
-        threading.Thread(target=refresh_thread, daemon=True).start()
-
+        
+        threading. Thread(target=refresh_thread, daemon=True).start()
+    
+    def diagnose_page(self):
+        """深度诊断"""
+        if not self.bot.driver:
+            messagebox.showerror("错误", "请先登录")
+            return
+        
+        def diagnose_thread():
+            self.log("\n" + "="*50)
+            self.log("🔬 开始深度诊断...")
+            self.log("="*50)
+            
+            try:
+                self.bot.wait_for_matches_to_load(self.log)
+                
+                raw_data = self.bot.get_raw_page_data()
+                elements = raw_data.get('elements', [])
+                self.log(f"\n📊 获取到 {len(elements)} 个元素")
+                
+                # 分析盘口标题
+                self.log("\n📍 盘口标题X坐标:")
+                bet_keywords = ['让球', '大/小', '独赢', '下个进球', '双方球队进球', '单/双']
+                bet_coords = {}
+                for elem in elements:
+                    for kw in bet_keywords:
+                        if kw in elem['text'] and len(elem['text']) < 20:
+                            if kw not in bet_coords: 
+                                bet_coords[kw] = []
+                            bet_coords[kw].append(elem['x'])
+                
+                for kw in bet_keywords:
+                    if kw in bet_coords: 
+                        coords = bet_coords[kw]
+                        self.log(f"  {kw}: X={int(sum(coords)/len(coords))} (范围:{min(coords)}-{max(coords)})")
+                
+                # 分析球队名
+                self.log("\n🏃 可能的球队名:")
+                teams = [e for e in elements if e['x'] < 280 and 2 <= len(e['text']) <= 35
+                        and not re.match(r'^[\d:. +-/]+$', e['text'])
+                        and not any(kw in e['text'] for kw in ['让球', '大小', '独赢', '进球', '半场'])]
+                for i, t in enumerate(teams[: 15]):
+                    self.log(f"  [{i+1}] X={t['x']: 4d} Y={t['y']:4d}:  {t['text']}")
+                
+                # 分析水位
+                self.log("\n💰 水位X坐标分布:")
+                odds_pattern = re.compile(r'^\d{1,2}\.\d{1,2}$')
+                odds_elems = [e for e in elements if odds_pattern.match(e['text'])]
+                
+                x_dist = {}
+                for e in odds_elems:
+                    x_range = (e['x'] // 80) * 80
+                    x_dist[x_range] = x_dist.get(x_range, 0) + 1
+                
+                for x_range in sorted(x_dist.keys()):
+                    self.log(f"  X={x_range: 4d}-{x_range+79}:  {x_dist[x_range]: 3d}个")
+                
+                # 运行分析
+                analyzed = self.bot.analyze_raw_data(raw_data)
+                matches = analyzed.get('matches', [])
+                
+                self.log(f"\n✅ 分析结果: {len(matches)} 场比赛")
+                for i, m in enumerate(matches[: 5]):
+                    home_c = sum(len(od.get('home', [])) for od in m.get('odds', {}).values())
+                    away_c = sum(len(od.get('away', [])) for od in m.get('odds', {}).values())
+                    self.log(f"  [{i+1}] {m.get('team1', '?')} vs {m.get('team2', '?')} | 主:{home_c} 客:{away_c}")
+                
+                self.update_odds_display(analyzed)
+                
+                self.log("\n" + "="*50)
+                self.log("✅ 诊断完成!")
+                self.log("="*50)
+                
+            except Exception as e: 
+                self.log(f"\n❌ 诊断出错: {e}")
+                import traceback
+                self.log(traceback.format_exc())
+        
+        threading.Thread(target=diagnose_thread, daemon=True).start()
+    
     def on_closing(self):
-        if messagebox.askokcancel("退出", "确定退出？"):
+        """关闭窗口"""
+        if messagebox.askokcancel("退出", "确定退出程序？"):
+            self.save_config()
             self.bot.stop()
             self.root.destroy()
 
 
-# ================== 主程序 ==================
+# ================== 主程序入口 ==================
 if __name__ == "__main__":
     root = tk. Tk()
     app = BettingBotGUI(root)
